@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -12,12 +13,14 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "vst3sdk/vstgui4/vstgui/lib/cbitmap.h"
 #include "vst3sdk/vstgui4/vstgui/lib/ccolor.h"
 #include "vst3sdk/vstgui4/vstgui/lib/cdrawcontext.h"
 #include "vst3sdk/vstgui4/vstgui/lib/cdrawdefs.h"
 #include "vst3sdk/vstgui4/vstgui/lib/cfileselector.h"
+#include "vst3sdk/vstgui4/vstgui/lib/cframe.h"
 #include "vst3sdk/vstgui4/vstgui/lib/cfont.h"
 #include "vst3sdk/vstgui4/vstgui/lib/cgraphicspath.h"
 #include "vst3sdk/vstgui4/vstgui/lib/clinestyle.h"
@@ -29,6 +32,7 @@
 #include "vst3sdk/vstgui4/vstgui/lib/events.h"
 #include "vst3sdk/vstgui4/vstgui/lib/vstguibase.h"
 #include "vst3sdk/vstgui4/vstgui/lib/vstguifwd.h"
+#include "vst/editor_theme.h"
 
 namespace beatrice::vst {
 
@@ -96,6 +100,8 @@ class ActionLabel : public CTextLabel {
               std::function<void()> action)
       : CTextLabel(size, text, nullptr, CParamDisplay::kNoFrame),
         action_(std::move(action)) {}
+
+  void SetAction(std::function<void()> action) { action_ = std::move(action); }
 
   auto onMouseDown(CPoint& where, const CButtonState& buttons)
       -> CMouseEventResult override {
@@ -176,9 +182,11 @@ class Slider : public CHorizontalSlider {
         precision_(precision) {
     font_ref_->remember();
     value_font_ref_->remember();
+    instances_.push_back(this);
   }
 
   ~Slider() override {
+    std::erase(instances_, this);
     font_ref_->forget();
     value_font_ref_->forget();
   }
@@ -193,7 +201,24 @@ class Slider : public CHorizontalSlider {
     return fine_wheel_inc_;
   }
 
+  void SetWheelEditingEnabled(const bool enabled) {
+    wheel_editing_enabled_ = enabled;
+  }
+
+  void SetValueLabels(std::vector<std::string> labels) {
+    value_labels_ = std::move(labels);
+  }
+
   void onMouseDownEvent(VSTGUI::MouseDownEvent& event) override {
+    if (event.buttonState.isLeft()) {
+      // CSlider normally requests focus through its parent container after a
+      // handled mouse event.  Establish it here as well so the explicit
+      // wheel-focus rule also works for double-click reset and sliders inside
+      // a scroll view.
+      if (auto* const frame = getFrame()) {
+        frame->setFocusView(this);
+      }
+    }
     if (event.buttonState.isLeft() && event.clickCount == 2) {
       if (getValue() != getDefaultValue()) {
         beginEdit();
@@ -206,34 +231,85 @@ class Slider : public CHorizontalSlider {
       event.ignoreFollowUpMoveAndUpEvents(true);
       return;
     }
+    if (event.buttonState.isLeft()) {
+      mouse_drag_editing_ = true;
+    }
     CHorizontalSlider::onMouseDownEvent(event);
   }
 
+  auto onMouseMoved(CPoint& where, const CButtonState& buttons)
+      -> CMouseEventResult override {
+    fine_adjustment_ = (buttons & kZoomModifier) != 0;
+    return CHorizontalSlider::onMouseMoved(where, buttons);
+  }
+
+  auto onMouseUp(CPoint& where, const CButtonState& buttons)
+      -> CMouseEventResult override {
+    const auto result = CHorizontalSlider::onMouseUp(where, buttons);
+    fine_adjustment_ = false;
+    if (mouse_drag_editing_) {
+      mouse_drag_editing_ = false;
+      if (drag_finished_action_) {
+        drag_finished_action_();
+      }
+    }
+    return result;
+  }
+
+  auto onMouseCancel() -> CMouseEventResult override {
+    const auto result = CHorizontalSlider::onMouseCancel();
+    fine_adjustment_ = false;
+    if (mouse_drag_editing_) {
+      mouse_drag_editing_ = false;
+      if (drag_finished_action_) {
+        drag_finished_action_();
+      }
+    }
+    return result;
+  }
+
   void onMouseWheelEvent(VSTGUI::MouseWheelEvent& event) override {
-    auto distance = isStyleHorizontal() ? event.deltaX : event.deltaY;
+    // VSTGUI dispatches this event only to the view beneath the cursor. The
+    // wheel therefore follows the pointer position, while focused_ remains
+    // reserved for keyboard navigation and the focus-state styling.
+    if (!wheel_editing_enabled_) {
+      return;
+    }
+    // A normal mouse reports deltaY even when the control itself is a
+    // horizontal slider. Use deltaX only for devices which emit no vertical
+    // wheel component.
+    auto distance = event.deltaY != 0.0 ? event.deltaY : event.deltaX;
     if (distance == 0.0) {
       return;
     }
 
-    onMouseWheelEditing(this);
-    if (isStyleHorizontal()) {
-      distance *= -1.0;
-    }
+    // The editor supplies a wheel increment per parameter. Holding Shift uses
+    // that parameter's fine increment; this keeps low-cut, pitch and morph
+    // controls independent instead of applying one global wheel step.
+    fine_adjustment_ =
+        (buttonStateFromEventModifiers(event.modifiers) & kZoomModifier) != 0;
     if (isInverseStyle()) {
       distance *= -1.0;
     }
 
     auto plain_value = getValue();
-    const auto increment =
-        buttonStateFromEventModifiers(event.modifiers) & kZoomModifier
-            ? getFineWheelInc()
-            : getWheelInc();
-    plain_value += static_cast<float>(distance) * increment;
+    // Device wheel deltas vary (fractional, 1, 2, or larger). Only use the
+    // direction so one event always produces one predictable step. Integer
+    // controls such as VQ Neighbor Count cannot represent tenths.
+    const auto wheel_increment = fine_adjustment_ ? fine_wheel_inc_
+                                                  : getWheelInc();
+    plain_value += std::copysign(wheel_increment,
+                                static_cast<float>(distance));
+    wheel_editing_ = true;
+    beginEdit();
     setValue(plain_value);
     if (isDirty()) {
       invalid();
       valueChanged();
     }
+    endEdit();
+    wheel_editing_ = false;
+    fine_adjustment_ = false;
     event.consumed = true;
   }
 
@@ -245,27 +321,35 @@ class Slider : public CHorizontalSlider {
     }
     switch (event.virt) {
       case VirtualKey::Up:
-        [[fallthrough]];
-      case VirtualKey::Right:
-        [[fallthrough]];
+        MoveFocus(-1);
+        event.consumed = true;
+        break;
       case VirtualKey::Down:
+        MoveFocus(1);
+        event.consumed = true;
+        break;
+      case VirtualKey::Right:
         [[fallthrough]];
       case VirtualKey::Left: {
         auto distance = 1.0f;
         const auto is_inverse = isInverseStyle();
-        if ((event.virt == VirtualKey::Down && !is_inverse) ||
-            (event.virt == VirtualKey::Up && is_inverse) ||
-            (event.virt == VirtualKey::Left && !is_inverse) ||
+        if ((event.virt == VirtualKey::Left && !is_inverse) ||
             (event.virt == VirtualKey::Right && is_inverse)) {
           distance = -distance;
         }
 
         auto plain_value = getValue();
-        if (buttonStateFromEventModifiers(event.modifiers) & kZoomModifier) {
-          plain_value += distance * getFineWheelInc();
-        } else {
-          plain_value += distance * getWheelInc();
-        }
+        fine_adjustment_ =
+            (buttonStateFromEventModifiers(event.modifiers) & kZoomModifier) !=
+            0;
+        const auto increment =
+            keyboard_inc_ > 0.0f
+                ? (fine_adjustment_ ? keyboard_fine_inc_ : keyboard_inc_)
+                : ((buttonStateFromEventModifiers(event.modifiers) &
+                    kZoomModifier)
+                       ? getFineWheelInc()
+                       : getWheelInc());
+        plain_value += distance * increment;
         setValue(plain_value);
 
         if (isDirty()) {
@@ -274,7 +358,9 @@ class Slider : public CHorizontalSlider {
           valueChanged();
           endEdit();
         }
+        fine_adjustment_ = false;
         event.consumed = true;
+        break;
       }
       case VirtualKey::Escape: {
         if (isEditing()) {
@@ -288,19 +374,66 @@ class Slider : public CHorizontalSlider {
     }
   }
 
+  void SetFocusChangedAction(std::function<void()> action) {
+    focus_changed_action_ = std::move(action);
+  }
+
+  void SetDragFinishedAction(std::function<void()> action) {
+    drag_finished_action_ = std::move(action);
+  }
+
+  [[nodiscard]] static auto IsAnyMouseDragEditing() -> bool {
+    return std::ranges::any_of(instances_, [](const auto* const slider) {
+      return slider->mouse_drag_editing_;
+    });
+  }
+
+  void SetKeyboardInc(const float increment) { keyboard_inc_ = increment; }
+  void SetKeyboardFineInc(const float increment) {
+    keyboard_fine_inc_ = increment;
+  }
+  [[nodiscard]] auto IsFineAdjustment() const -> bool {
+    return fine_adjustment_;
+  }
+  [[nodiscard]] auto IsWheelEditing() const -> bool {
+    return wheel_editing_;
+  }
+
+  void takeFocus() override {
+    CView::takeFocus();
+    focused_ = true;
+    if (focus_changed_action_) {
+      focus_changed_action_();
+    }
+    invalid();
+  }
+
+  void looseFocus() override {
+    CView::looseFocus();
+    focused_ = false;
+    invalid();
+  }
+
   void draw(CDrawContext* const context) override {
     // 値を文字で表示
     auto value_string = std::string();
     if (IsEnabled()) {
-      value_string.resize(10);
-      const auto result =
-          std::to_chars(std::to_address(value_string.begin()),
-                        std::to_address(value_string.end()), getValue(),
-                        std::chars_format::fixed, precision_);
-      value_string.resize(result.ptr - std::to_address(value_string.begin()));
-      if (!units_.empty()) {
-        value_string += " ";
-        value_string += units_;
+      if (!value_labels_.empty()) {
+        const auto label_index = std::clamp(
+            static_cast<int>(std::round(getValue() - getMin())), 0,
+            static_cast<int>(value_labels_.size()) - 1);
+        value_string = value_labels_[label_index];
+      } else {
+        value_string.resize(10);
+        const auto result =
+            std::to_chars(std::to_address(value_string.begin()),
+                          std::to_address(value_string.end()), getValue(),
+                          std::chars_format::fixed, precision_);
+        value_string.resize(result.ptr - std::to_address(value_string.begin()));
+        if (!units_.empty()) {
+          value_string += " ";
+          value_string += units_;
+        }
       }
     } else {
       value_string = "Disabled";
@@ -311,8 +444,8 @@ class Slider : public CHorizontalSlider {
     context->saveGlobalState();
     context->setDrawMode(kAntiAliasing);
     context->setFont(font_ref_);
-    context->setFontColor(IsEnabled() ? CColor(0xb8, 0xb5, 0xaf)
-                                      : CColor(0x76, 0x73, 0x6d));
+    context->setFontColor(IsEnabled() ? theme::kTextSliderTitle
+                                      : theme::kTextDisabled);
     // getPlatformString の結果を直接渡さないと
     // use-after-free になるので注意
     context->drawString(
@@ -321,8 +454,8 @@ class Slider : public CHorizontalSlider {
               rect.top + 18),
         CHoriTxtAlign::kLeftText, true);
     context->setFont(value_font_ref_);
-    context->setFontColor(IsEnabled() ? CColor(0xca, 0xc7, 0xc1)
-                                      : CColor(0x76, 0x73, 0x6d));
+    context->setFontColor(IsEnabled() ? theme::kTextSliderValue
+                                      : theme::kTextDisabled);
     context->drawString(UTF8String(value_string).getPlatformString(),
                         CRect(rect.left + rect.getWidth() * 0.56, rect.top,
                               rect.right, rect.top + 18),
@@ -333,10 +466,13 @@ class Slider : public CHorizontalSlider {
     const auto right = rect.right;
     context->setLineStyle(kLineSolid);
     context->setLineWidth(3);
-    context->setFrameColor(CColor(0x05, 0x05, 0x05));
+    context->setFrameColor(theme::kSliderFrame);
     context->drawLine(CPoint(left, track_y), CPoint(right, track_y));
-    context->setFrameColor(IsEnabled() ? CColor(0xe2, 0xba, 0x79)
-                                       : CColor(0x5b, 0x54, 0x49));
+    const auto active_track = theme::kSliderTrackActive;
+    const auto inactive_track = theme::kSliderTrackInactive;
+    context->setFrameColor(IsEnabled() ? (focused_ ? active_track
+                                                   : inactive_track)
+                                       : theme::kSliderDisabled);
     const auto norm = (getMax() == getMin())
                           ? 0.0
                           : (getValue() - getMin()) / (getMax() - getMin());
@@ -346,21 +482,26 @@ class Slider : public CHorizontalSlider {
                                    left + kKnobHalfWidth + kKnobFrameInset,
                                    right - kKnobHalfWidth - kKnobFrameInset);
     context->drawLine(CPoint(left, track_y), CPoint(knob_x, track_y));
-    context->setFillColor(IsEnabled() ? CColor(0xc3, 0xa0, 0x66)
-                                      : CColor(0x5b, 0x54, 0x49));
+    context->setFillColor(IsEnabled() ? theme::kSliderHandle
+                                      : theme::kSliderDisabled);
     auto knob_rect = CRect(knob_x - kKnobHalfWidth, track_y - 8.0,
                            knob_x + kKnobHalfWidth, track_y + 7.0);
-    context->setFillColor(CColor(0x00, 0x00, 0x00, IsEnabled() ? 0x5c : 0x2c));
+    context->setFillColor(theme::WithAlpha(
+        theme::kSliderShadow, IsEnabled() ? 0x5c : 0x2c));
     auto shadow_rect = knob_rect;
     shadow_rect.offset(0.0, 2.0);
     if (auto path = VSTGUI::owned(
             context->createRoundRectGraphicsPath(shadow_rect, 2.0))) {
       context->drawGraphicsPath(path, CDrawContext::kPathFilled);
     }
-    context->setFillColor(IsEnabled() ? CColor(0xe2, 0xba, 0x79)
-                                      : CColor(0x5b, 0x54, 0x49));
-    context->setFrameColor(IsEnabled() ? CColor(0xf4, 0xd7, 0x9e, 0x9e)
-                                       : CColor(0x5b, 0x54, 0x49));
+    context->setFillColor(IsEnabled() ? (focused_ ? active_track
+                                                  : inactive_track)
+                                      : theme::kSliderDisabled);
+    context->setFrameColor(
+        IsEnabled()
+            ? (focused_ ? theme::kSliderHandleFocused
+                        : theme::kSliderHandleUnfocused)
+            : theme::kSliderDisabled);
     context->setLineWidth(1);
     if (auto path = VSTGUI::owned(
             context->createRoundRectGraphicsPath(knob_rect, 2.0))) {
@@ -395,13 +536,69 @@ class Slider : public CHorizontalSlider {
   [[nodiscard]] virtual auto GetTrackYOffset() const -> CCoord { return 33.0; }
 
  private:
+  [[nodiscard]] auto IsEffectivelyVisible() const -> bool {
+    for (auto* view = static_cast<const CView*>(this); view;
+         view = view->getParentView()) {
+      if (!view->isVisible()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  void MoveFocus(const int direction) {
+    auto* const current_frame = getFrame();
+    if (!current_frame) {
+      return;
+    }
+    const auto current_center =
+        translateToGlobal(CRect(0, 0, getViewSize().getWidth(),
+                                getViewSize().getHeight())).getCenter();
+    auto candidates = std::vector<std::pair<double, Slider*>>{};
+    for (auto* const slider : instances_) {
+      if (slider->getFrame() != current_frame || !slider->IsEnabled() ||
+          !slider->IsEffectivelyVisible()) {
+        continue;
+      }
+      const auto center = slider->translateToGlobal(
+          CRect(0, 0, slider->getViewSize().getWidth(),
+                slider->getViewSize().getHeight())).getCenter();
+      if (std::abs(center.x - current_center.x) < 120.0) {
+        candidates.emplace_back(center.y, slider);
+      }
+    }
+    std::ranges::sort(candidates, {}, &std::pair<double, Slider*>::first);
+    const auto it = std::ranges::find_if(
+        candidates, [this](const auto& item) { return item.second == this; });
+    if (it == candidates.end()) {
+      return;
+    }
+    const auto index = static_cast<int>(it - candidates.begin());
+    const auto next = std::clamp(index + direction, 0,
+                                 static_cast<int>(candidates.size()) - 1);
+    if (next != index) {
+      current_frame->setFocusView(candidates[next].second);
+    }
+  }
+
+  inline static std::vector<Slider*> instances_{};
   std::string units_;
   CFontRef font_ref_;
   CFontRef value_font_ref_;
   std::string title_;
+  std::vector<std::string> value_labels_;
   int precision_;
   float fine_wheel_inc_ = 0.1f;
   bool enabled_ = true;
+  bool focused_ = false;
+  std::function<void()> focus_changed_action_;
+  std::function<void()> drag_finished_action_;
+  float keyboard_inc_ = 0.0f;
+  float keyboard_fine_inc_ = 0.1f;
+  bool fine_adjustment_ = false;
+  bool wheel_editing_enabled_ = false;
+  bool wheel_editing_ = false;
+  bool mouse_drag_editing_ = false;
 };
 
 class FileSelector : public CTextLabel {
@@ -419,6 +616,14 @@ class FileSelector : public CTextLabel {
   auto onMouseDown(CPoint& where, const CButtonState& buttons)
       -> CMouseEventResult override {
     if (buttons.isLeftButton()) {
+      pressed_ = true;
+      invalid();
+      if (auto* const frame = getFrame()) {
+        frame->doAfterEventProcessing([self = VSTGUI::shared(this)]() {
+          self->pressed_ = false;
+          self->invalid();
+        });
+      }
       auto* const selector =
           CNewFileSelector::create(getFrame(), CNewFileSelector::kSelectFile);
       if (selector) {
@@ -432,6 +637,14 @@ class FileSelector : public CTextLabel {
       return VSTGUI::kMouseEventHandled;
     }
     return CTextLabel::onMouseDown(where, buttons);
+  }
+
+  void draw(CDrawContext* const context) override {
+    CTextLabel::draw(context);
+    if (pressed_) {
+      context->setFillColor(theme::kSliderHoverOverlay);
+      context->drawRect(getViewSize(), VSTGUI::kDrawFilled);
+    }
   }
 
   auto notify(CBaseObject* sender, const char* message)
@@ -468,6 +681,7 @@ class FileSelector : public CTextLabel {
 
  private:
   std::filesystem::path file_;
+  bool pressed_ = false;
 };
 
 }  // namespace beatrice::vst

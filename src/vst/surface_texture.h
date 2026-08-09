@@ -21,6 +21,8 @@
 #include "vst3sdk/vstgui4/vstgui/lib/cviewcontainer.h"
 #include "vst3sdk/vstgui4/vstgui/lib/vstguibase.h"
 
+#include "vst/editor_theme.h"
+
 namespace beatrice::vst {
 
 using VSTGUI::CBitmap;
@@ -334,7 +336,7 @@ class SurfaceBitmap : public CBitmap {
 class SurfacePanel : public CViewContainer {
  public:
   SurfacePanel(const CRect& size, const SharedPointer<SurfaceBitmap>& texture,
-               const CColor& border = CColor(0xff, 0xff, 0xff, 0x10),
+               const CColor& border = theme::kHeaderOverlay,
                CCoord radius = 2.0)
       : CViewContainer(size),
         texture_(texture),
@@ -349,7 +351,7 @@ class SurfacePanel : public CViewContainer {
       texture_->draw(context, rect, CPoint(0, 0), 1.0f);
     }
     context->setDrawMode(kAntiAliasing);
-    context->setLineWidth(1);
+    context->setLineWidth(1.0);
     context->setFrameColor(border_);
     context->setFillColor(kTransparentCColor);
     auto stroke = rect;
@@ -365,9 +367,21 @@ class SurfacePanel : public CViewContainer {
     }
   }
 
+  void SetFocusAction(std::function<void()> action) {
+    focus_action_ = std::move(action);
+  }
+
+  void onMouseDownEvent(VSTGUI::MouseDownEvent& event) override {
+    if (event.buttonState.isLeft() && focus_action_) {
+      focus_action_();
+    }
+    CViewContainer::onMouseDownEvent(event);
+  }
+
  private:
   SharedPointer<SurfaceBitmap> texture_;
   CColor border_;
+  std::function<void()> focus_action_;
   CCoord radius_;
 };
 

@@ -21,8 +21,9 @@ namespace beatrice::vst {
 
 MorphPadController::MorphPadController(
     const common::ControllerCore& core,
-    Steinberg::Vst::EditController& controller)
-    : core_(core), controller_(controller) {}
+    Steinberg::Vst::EditController& controller,
+    std::function<void()> edit_finished)
+    : core_(core), controller_(controller), edit_finished_(std::move(edit_finished)) {}
 
 void MorphPadController::valueChanged(VSTGUI::CControl* const control) {
   assert(editing_);
@@ -88,6 +89,9 @@ void MorphPadController::controlEndEdit(VSTGUI::CControl* const control) {
   controller_.finishGroupEdit();
   edited_param_ids_.clear();
   editing_ = false;
+  if (edit_finished_) {
+    edit_finished_();
+  }
 }
 
 }  // namespace beatrice::vst

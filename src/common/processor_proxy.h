@@ -28,7 +28,7 @@ class ProcessorProxy {
   }
   explicit ProcessorProxy(const ParameterState& parameter_state)
       : sample_rate_(), parameter_state_(parameter_state) {
-    auto error_code = SyncAllParameters();
+    [[maybe_unused]] const auto error_code = SyncAllParameters();
     assert(error_code == ErrorCode::kSuccess);
   }
   [[nodiscard]] auto GetSampleRate() const -> double { return sample_rate_; }

@@ -2,6 +2,8 @@
 
 #include "vst/processor.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <mutex>  // NOLINT(build/c++11)
@@ -82,6 +84,11 @@ auto PLUGIN_API Processor::setupProcessing(ProcessSetup& setup) -> tresult {
   }
   const auto error_code = vc_core_.SetSampleRate(setup.sampleRate);
   assert(error_code == common::ErrorCode::kSuccess);
+  dry_buffer_.assign(setup.maxSamplesPerBlock, 0.0F);
+  bypass_buffer_.assign(setup.maxSamplesPerBlock, 0.0F);
+  const auto fade_samples = std::max(1.0, setup.sampleRate * 0.04);
+  bypass_mix_step_ = static_cast<float>(1.0 / fade_samples);
+  bypass_mix_ = 0.0F;
   return AudioEffect::setupProcessing(setup);
 }
 
@@ -95,6 +102,17 @@ auto PLUGIN_API Processor::setActive(const TBool state) -> tresult {
     assert(error_code == common::ErrorCode::kSuccess);
   }
   return AudioEffect::setActive(state);
+}
+
+auto PLUGIN_API Processor::getLatencySamples() -> uint32 {
+  std::lock_guard<std::mutex> lock(mtx_);
+  const auto latency_reporting = std::get<int>(
+      vc_core_.GetParameterState().GetValue(
+          common::ParameterID::kLatencyReporting));
+  if (latency_reporting == 0) {
+    return 0;
+  }
+  return static_cast<uint32>(vc_core_.GetCore()->GetLatencySamples());
 }
 
 // TODO(bug): tail を設定する
@@ -182,47 +200,116 @@ auto PLUGIN_API Processor::process(ProcessData& data) -> tresult {
   // 出力バス 0 のチャンネル 0 に入力をコピー
   const float* const in0 = data.inputs[0].channelBuffers32[0];
   float* const out0 = data.outputs[0].channelBuffers32[0];
-  std::memmove(out0, in0, data.numSamples * sizeof(float));
-  if (data.inputs[0].numChannels >= 2) {
-    auto* const in1 = data.inputs[0].channelBuffers32[1];
-    for (auto i = 0; i < data.numSamples; ++i) {
-      out0[i] += in1[i];
-      out0[i] *= 0.5;
+  float* const out1 = data.outputs[0].numChannels >= 2
+                          ? data.outputs[0].channelBuffers32[1]
+                          : nullptr;
+  if (dry_buffer_.size() < data.numSamples ||
+      bypass_buffer_.size() < data.numSamples) {
+    std::memset(out0, 0, data.numSamples * sizeof(float));
+    if (out1 != nullptr) {
+      std::memset(out1, 0, data.numSamples * sizeof(float));
     }
+    data.outputs[0].silenceFlags = 1U;
+    return kResultTrue;
+  }
+  const float* const in1 = data.inputs[0].numChannels >= 2
+                               ? data.inputs[0].channelBuffers32[1]
+                               : nullptr;
+  const auto host_input_silent = data.inputs[0].silenceFlags != 0;
+  for (auto i = 0; i < data.numSamples; ++i) {
+    auto mono = host_input_silent ? 0.0F : in0[i];
+    if (!host_input_silent && in1 != nullptr) {
+      mono = (mono + in1[i]) * 0.5F;
+    }
+    dry_buffer_[i] = mono;
+    out0[i] = mono;
   }
 
   // サイレンスフラグの確認
-  if (data.inputs[0].silenceFlags) {
-    data.outputs[0].silenceFlags = data.inputs[0].silenceFlags;
-    if (in0 != out0) {
-      std::memset(out0, 0, data.numSamples * sizeof(float));
-    }
-    return kResultOk;
-  }
+  // Reverb tails must continue after the host marks its input silent.
 
   // 無音チェック
-  auto sil = true;
-  for (auto i = 0; i < data.numSamples; ++i) {
-    if (out0[i] != 0.0F) {
-      sil = false;
-      break;
+  auto input_silent = host_input_silent;
+  if (!input_silent) {
+    input_silent = true;
+    for (auto i = 0; i < data.numSamples; ++i) {
+      if (out0[i] != 0.0F) {
+        input_silent = false;
+        break;
+      }
     }
   }
   // TODO(bug): 遅延させる
-  if (sil) {
-    data.outputs[0].silenceFlags = 1U;
-  } else {
+  const auto bypass = std::get<int>(vc_core_.GetParameterState().GetValue(
+                         common::ParameterID::kBypass)) != 0;
+  const auto needs_wet = !bypass || bypass_mix_ < 0.999F;
+  if (bypass) {
+    std::memcpy(bypass_buffer_.data(), dry_buffer_.data(),
+                data.numSamples * sizeof(float));
+    if (!input_silent) {
+      [[maybe_unused]] const auto error_code =
+          vc_core_.GetCore()->ProcessWithoutConversion(
+              bypass_buffer_.data(), bypass_buffer_.data(), data.numSamples);
+    }
+  }
+  auto wet_active = false;
+  if (needs_wet) {
     // VC
-    [[maybe_unused]] const auto error_code =
-        vc_core_.GetCore()->Process(out0, out0, data.numSamples);
+    if (!input_silent) {
+      [[maybe_unused]] const auto error_code =
+          vc_core_.GetCore()->Process(out0, out0, data.numSamples, out1);
+      wet_active = true;
+    } else if (vc_core_.GetCore()->HasOutputEffectsTail()) {
+      [[maybe_unused]] const auto error_code =
+          vc_core_.GetCore()->ProcessOutputEffectsTail(
+              out0, out1, data.numSamples);
+      wet_active = true;
+    } else {
+      std::memset(out0, 0, data.numSamples * sizeof(float));
+      if (out1 != nullptr) {
+        std::memset(out1, 0, data.numSamples * sizeof(float));
+      }
+    }
     // TODO(bug): error_code に基づいてサイレンスフラグを立てる
   }
 
   // 出力がステレオなら複製する
-  if (data.outputs[0].numChannels >= 2) {
-    auto* const out1 = data.outputs[0].channelBuffers32[1];
-    memcpy(out1, out0, data.numSamples * sizeof(float));
+  if (!needs_wet) {
+    vc_core_.GetCore()->DiscardOutputEffectsTail();
+    std::memcpy(out0, bypass_buffer_.data(),
+                data.numSamples * sizeof(float));
+    if (out1 != nullptr) {
+      std::memcpy(out1, bypass_buffer_.data(),
+                  data.numSamples * sizeof(float));
+    }
   }
+
+  const auto target_mix = bypass ? 1.0F : 0.0F;
+  for (auto i = 0; i < data.numSamples; ++i) {
+    bypass_mix_ += std::clamp(target_mix - bypass_mix_, -bypass_mix_step_,
+                              bypass_mix_step_);
+    const auto wet_left = wet_active ? out0[i] : 0.0F;
+    const auto wet_right =
+        out1 != nullptr ? (wet_active ? out1[i] : 0.0F) : wet_left;
+    const auto dry = bypass ? bypass_buffer_[i] : dry_buffer_[i];
+    out0[i] = wet_left * (1.0F - bypass_mix_) + dry * bypass_mix_;
+    if (out1 != nullptr) {
+      out1[i] = wet_right * (1.0F - bypass_mix_) + dry * bypass_mix_;
+    }
+  }
+
+  auto output_silent = true;
+  for (auto i = 0; i < data.numSamples; ++i) {
+    if (out0[i] != 0.0F || (out1 != nullptr && out1[i] != 0.0F)) {
+      output_silent = false;
+      break;
+    }
+  }
+  data.outputs[0].silenceFlags =
+      output_silent
+          ? (static_cast<Steinberg::uint64>(1U)
+             << data.outputs[0].numChannels) - 1U
+          : 0U;
 
   return kResultOk;
 }
@@ -270,7 +357,6 @@ auto PLUGIN_API Processor::getState(IBStream* const state) -> tresult {
 auto PLUGIN_API Processor::notify(IMessage* const message) -> tresult {
   const auto* const message_id = message->getMessageID();
   if (std::strcmp(message_id, "param_change") == 0) {
-    std::lock_guard<std::mutex> lock(mtx_);
     uint32 siz;
     const void* data;
     if (message->getAttributes()->getBinary("param_id", data, siz) !=
@@ -282,18 +368,37 @@ auto PLUGIN_API Processor::notify(IMessage* const message) -> tresult {
     }
     ParamID vst_param_id;
     std::memcpy(&vst_param_id, data, sizeof(vst_param_id));
+    const auto param_id = static_cast<common::ParameterID>(vst_param_id);
+    if (param_id == common::ParameterID::kLatencyReporting) {
+      Steinberg::int64 value;
+      if (message->getAttributes()->getInt("data", value) != kResultTrue) {
+        return kResultFalse;
+      }
+      {
+        std::lock_guard<std::mutex> lock(mtx_);
+        [[maybe_unused]] const auto error_code =
+            vc_core_.SetParameter(param_id, static_cast<int>(value));
+      }
+      sendMessageID("latency_changed");
+      return kResultTrue;
+    }
     if (message->getAttributes()->getBinary("data", data, siz) != kResultTrue) {
       return kResultFalse;
     }
     auto value = std::u8string();
     value.resize(siz);
     std::memcpy(value.data(), data, siz);
-    const auto param_id = static_cast<common::ParameterID>(vst_param_id);
     // Controller 側の状態との整合性を維持するため、
     // Controller 側や Host から送られた設定値は、たとえ不正なものでも
     // なるべくそのまま保持する。
-    [[maybe_unused]] const auto error_code =
-        vc_core_.SetParameter(param_id, value);
+    {
+      std::lock_guard<std::mutex> lock(mtx_);
+      [[maybe_unused]] const auto error_code =
+          vc_core_.SetParameter(param_id, value);
+    }
+    if (param_id == common::ParameterID::kModel) {
+      sendMessageID("latency_changed");
+    }
     return kResultTrue;
   }
   return AudioEffect::notify(message);

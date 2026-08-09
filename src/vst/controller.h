@@ -19,6 +19,7 @@ class Controller : public Steinberg::Vst::EditController {
   using tresult = Steinberg::tresult;
   using IBStream = Steinberg::IBStream;
   using IPlugView = Steinberg::IPlugView;
+  using IMessage = Steinberg::Vst::IMessage;
   using EditorView = Steinberg::Vst::EditorView;
   using ParamID = Steinberg::Vst::ParamID;
   using ParamValue = Steinberg::Vst::ParamValue;
@@ -36,6 +37,7 @@ class Controller : public Steinberg::Vst::EditController {
 
   // from EditController
   auto PLUGIN_API setComponentState(IBStream* state) -> tresult SMTG_OVERRIDE;
+  auto PLUGIN_API notify(IMessage* message) -> tresult SMTG_OVERRIDE;
 
   auto PLUGIN_API createView(const char* name) -> IPlugView* SMTG_OVERRIDE;
 

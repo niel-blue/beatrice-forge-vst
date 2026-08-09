@@ -12,6 +12,7 @@
 // Beatrice
 #include "common/error.h"
 #include "common/gain.h"
+#include "common/input_cleanup.h"
 #include "common/model_config.h"
 #include "common/processor_core.h"
 #include "common/resample.h"
@@ -23,17 +24,21 @@ namespace beatrice::common {
 class ProcessorCore1 : public ProcessorCoreBase {
  public:
   explicit ProcessorCore1(const double sample_rate)
-      : ProcessorCoreBase(),
+      : ProcessorCoreBase(sample_rate),
         any_freq_in_out_(sample_rate),
         phone_extractor_(Beatrice20b1_CreatePhoneExtractor()),
         pitch_estimator_(Beatrice20b1_CreatePitchEstimator()),
         waveform_generator_(Beatrice20b1_CreateWaveformGenerator()),
         gain_(),
+        input_cleanup_(sample_rate),
+        bypass_input_cleanup_(sample_rate),
         phone_context_(Beatrice20b1_CreatePhoneContext1()),
         pitch_context_(Beatrice20b1_CreatePitchContext1()),
         waveform_context_(Beatrice20b1_CreateWaveformContext1()),
         input_gain_context_(sample_rate),
         output_gain_context_(sample_rate),
+        bypass_input_gain_context_(sample_rate),
+        bypass_output_gain_context_(sample_rate),
         speaker_morphing_weights_() {}
   ~ProcessorCore1() override {
     Beatrice20b1_DestroyPhoneExtractor(phone_extractor_);
@@ -44,8 +49,13 @@ class ProcessorCore1 : public ProcessorCoreBase {
     Beatrice20b1_DestroyWaveformContext1(waveform_context_);
   }
   [[nodiscard]] auto GetVersion() const -> int override;
-  auto Process(const float* input, float* output, int n_samples)
-      -> ErrorCode override;
+  [[nodiscard]] auto GetLatencySamples() const -> int override;
+  auto ProcessWithoutConversion(const float* input, float* output,
+                                int n_samples) -> ErrorCode override;
+  auto Process(const float* input, float* output, int n_samples,
+               float* output_right = nullptr) -> ErrorCode override;
+  auto ProcessOutputEffectsTail(float* output, float* output_right,
+                                int n_samples) -> ErrorCode override;
   auto ResetContext() -> ErrorCode override;
   auto LoadModel(const ModelConfig& /*config*/,
                  const std::filesystem::path& /*file*/) -> ErrorCode override;
@@ -55,6 +65,10 @@ class ProcessorCore1 : public ProcessorCoreBase {
   auto SetPitchShift(double /*pitch_shift*/) -> ErrorCode override;
   auto SetInputGain(double /*input_gain*/) -> ErrorCode override;
   auto SetOutputGain(double /*output_gain*/) -> ErrorCode override;
+  auto SetCompensatedDrive(double /*drive*/) -> ErrorCode override;
+  auto SetLowCutHz(double /*low_cut_hz*/) -> ErrorCode override;
+  auto SetLightDenoise(int /*denoise_mode*/) -> ErrorCode override;
+  auto SetDeClickStrength(double /*strength*/) -> ErrorCode override;
   auto SetAverageSourcePitch(double /*average_pitch*/) -> ErrorCode override;
   // NOLINTNEXTLINE(readability/casting)
   auto SetIntonationIntensity(double /*intonation_intensity*/)
@@ -90,6 +104,9 @@ class ProcessorCore1 : public ProcessorCoreBase {
   int pitch_correction_type_ = 0;
   double min_source_pitch_ = 33.125;
   double max_source_pitch_ = 80.875;
+  double input_gain_ = 0.0;
+  double output_gain_ = 0.0;
+  double compensated_drive_ = 0.0;
 
   resampler::AnyFreqInOut<ConvertWithModelBlockSize> any_freq_in_out_;
 
@@ -100,12 +117,16 @@ class ProcessorCore1 : public ProcessorCoreBase {
   AlignedVector<float, 64> speaker_embeddings_;
   std::vector<float> formant_shift_embeddings_;
   Gain gain_;
+  InputCleanup input_cleanup_;
+  InputCleanup bypass_input_cleanup_;
   // 状態
   Beatrice20b1_PhoneContext1* phone_context_;
   Beatrice20b1_PitchContext1* pitch_context_;
   Beatrice20b1_WaveformContext1* waveform_context_;
   Gain::Context input_gain_context_;
   Gain::Context output_gain_context_;
+  Gain::Context bypass_input_gain_context_;
+  Gain::Context bypass_output_gain_context_;
 
   // モデルマージ
   std::array<float, kMaxNSpeakers> speaker_morphing_weights_;
@@ -113,6 +134,7 @@ class ProcessorCore1 : public ProcessorCoreBase {
 
   auto IsLoaded() -> bool { return !model_file_.empty(); }
   auto ApplySpeakerMorphingWeights() -> ErrorCode;
+  void UpdateGainTargets();
   void Process1(const float* input, float* output);
 };
 

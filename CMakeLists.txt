@@ -4,7 +4,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(major_version 2)
 set(minor_version 0)
 set(patch_version 0)
-set(prerelease_version "-rc.2")
+set(prerelease_version "-rc.3")
 execute_process(
     COMMAND git rev-parse --short HEAD
     OUTPUT_VARIABLE GIT_HASH
@@ -55,11 +55,14 @@ set(SMTG_PACKAGE_ICON_PATH ${CMAKE_CURRENT_SOURCE_DIR}/resource/icon.ico)
 smtg_add_vst3plugin(${target}
     src/common/parameter_schema.cc
     src/common/parameter_state.cc
+    src/common/preset.cc
+    src/common/output_effects.cc
     src/common/processor_core_0.cc
     src/common/processor_core_1.cc
     src/common/processor_core_2.cc
     src/common/processor_proxy.cc
     src/common/voice_morph_parameter.cc
+    src/ui/control_help_locale.cc
     src/vst/controller.cc
     src/vst/description_text_layout.cc
     src/vst/description_url.cc

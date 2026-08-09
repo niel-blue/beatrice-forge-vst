@@ -18,6 +18,7 @@
 #include "common/model_config.h"
 #include "common/processor_core.h"
 #include "common/processor_proxy.h"
+#include "common/simple_morph.h"
 #include "common/voice_morph_parameter.h"
 #include "common/voice_morph_state.h"
 
@@ -51,6 +52,13 @@ auto SetVoiceMorphParameterOnProcessor(ProcessorProxy& processor, double)
 const ParameterSchema kSchema = [] {
   constexpr auto kDefaultVoiceMorphState = VoiceMorphState{};
   auto schema = ParameterSchema({
+      {ParameterID::kBypass,
+       ListParameter(
+           u8"Bypass"s, std::vector<std::u8string>{u8"OFF"s, u8"ON"s}, 0,
+           u8"Byp"s,
+           parameter_flag::kCanAutomate | parameter_flag::kIsBypass,
+           [](ControllerCore&, int) { return ErrorCode::kSuccess; },
+           [](ProcessorProxy&, int) { return ErrorCode::kSuccess; })},
       {ParameterID::kModel,
        StringParameter(
            u8"Model"s, u8""s, false,
@@ -228,7 +236,7 @@ const ParameterSchema kSchema = [] {
            })},
       {ParameterID::kFormantShift,
        NumberParameter(
-           u8"Formant Shift"s, 0.0, -2.0, 2.0, u8"st"s, 8, u8"For"s,
+           u8"Formant Shift"s, 0.0, -2.0, 2.0, u8"st"s, 4 * 10, u8"For"s,
            parameter_flag::kCanAutomate,
            [](ControllerCore& controller, const double value) {
              const auto target_speaker = std::get<int>(
@@ -275,7 +283,7 @@ const ParameterSchema kSchema = [] {
       {ParameterID::kPitchShift,
        NumberParameter(
            u8"Pitch Shift"s, 0.0, -kMaxAbsPitchShift, kMaxAbsPitchShift,
-           u8"st"s, 48 * 8, u8"Pit"s, parameter_flag::kCanAutomate,
+           u8"st"s, 48 * 10, u8"Pit"s, parameter_flag::kCanAutomate,
            [](ControllerCore& controller, const double value) {
              // AverageSourcePitch を変更する
              const auto target_speaker = std::get<int>(
@@ -301,7 +309,7 @@ const ParameterSchema kSchema = [] {
            })},
       {ParameterID::kAverageSourcePitch,
        NumberParameter(
-           u8"Average Source Pitch"s, 52.0, 0.0, 128.0, u8""s, 128 * 8,
+           u8"Average Source Pitch"s, 52.0, 0.0, 128.0, u8""s, 128 * 10,
            u8"SrcPit"s, parameter_flag::kNoFlags,
            [](ControllerCore& controller, const double value) {
              // PitchShift を変更する
@@ -327,7 +335,7 @@ const ParameterSchema kSchema = [] {
            })},
       {ParameterID::kLock,
        ListParameter(
-           u8"Lock"s, {u8"Average Source Pitch"s, u8"Pitch Shift"s}, 0,
+           u8"Lock"s, {u8"Average Source Pitch"s, u8"Pitch Shift"s}, 1,
            u8"Loc"s, parameter_flag::kIsList,
            [](ControllerCore&, int) { return ErrorCode::kSuccess; },
            [](ProcessorProxy&, int) { return ErrorCode::kSuccess; })},
@@ -346,6 +354,77 @@ const ParameterSchema kSchema = [] {
            [](ControllerCore&, double) { return ErrorCode::kSuccess; },
            [](ProcessorProxy& vc, const double value) {
              return vc.GetCore()->SetOutputGain(value);
+           })},
+      {ParameterID::kCompensatedDrive,
+       NumberParameter(u8"Noise Reduction Boost"s, 0.0, 0.0, 20.0, u8"dB"s,
+                       20 * 10, u8"Drive"s, parameter_flag::kCanAutomate,
+                       [](ControllerCore&, double) { return ErrorCode::kSuccess; },
+                       [](ProcessorProxy& vc, const double value) {
+                         return vc.GetCore()->SetCompensatedDrive(value);
+                       })},
+      {ParameterID::kLowCutHz,
+       NumberParameter(
+           u8"Low Cut"s, 0.0, 0.0, 500.0, u8"Hz"s, 500, u8"LowCut"s,
+           parameter_flag::kCanAutomate,
+           [](ControllerCore&, double) { return ErrorCode::kSuccess; },
+           [](ProcessorProxy& vc, const double value) {
+             return vc.GetCore()->SetLowCutHz(value);
+           })},
+      {ParameterID::kLightDenoise,
+       ListParameter(
+           u8"Light Denoise"s, {u8"OFF"s, u8"LIGHT"s, u8"STANDARD"s},
+           0, u8"Denoise"s, parameter_flag::kCanAutomate | parameter_flag::kIsList,
+           [](ControllerCore&, int) { return ErrorCode::kSuccess; },
+           [](ProcessorProxy& vc, const int value) {
+             return vc.GetCore()->SetLightDenoise(value);
+           })},
+      {ParameterID::kDeClick,
+       NumberParameter(
+           u8"De-click"s, 0.0, 0.0, 100.0, u8"%"s, 100, u8"DeClick"s,
+           parameter_flag::kCanAutomate,
+           [](ControllerCore&, double) { return ErrorCode::kSuccess; },
+           [](ProcessorProxy& vc, const double value) {
+             return vc.GetCore()->SetDeClickStrength(value);
+           })},
+      {ParameterID::kDeMud,
+       NumberParameter(
+           u8"De-Mud"s, 0.0, 0.0, 100.0, u8"%"s, 100, u8"DeMud"s,
+           parameter_flag::kCanAutomate,
+           [](ControllerCore&, double) { return ErrorCode::kSuccess; },
+           [](ProcessorProxy& vc, const double value) {
+             return vc.GetCore()->SetDeMud(value);
+           })},
+      {ParameterID::kPresence,
+       NumberParameter(
+           u8"Presence"s, 0.0, 0.0, 100.0, u8"%"s, 100, u8"Presence"s,
+           parameter_flag::kCanAutomate,
+           [](ControllerCore&, double) { return ErrorCode::kSuccess; },
+           [](ProcessorProxy& vc, const double value) {
+             return vc.GetCore()->SetPresence(value);
+           })},
+      {ParameterID::kReverbMix,
+       NumberParameter(
+           u8"Reverb Mix"s, 0.0, 0.0, 100.0, u8"%"s, 100, u8"RevMix"s,
+           parameter_flag::kCanAutomate,
+           [](ControllerCore&, double) { return ErrorCode::kSuccess; },
+           [](ProcessorProxy& vc, const double value) {
+             return vc.GetCore()->SetReverbMix(value);
+           })},
+      {ParameterID::kReverbDecay,
+       NumberParameter(
+           u8"Decay"s, 1.2, 0.2, 5.0, u8"s"s, 48, u8"RevDecay"s,
+           parameter_flag::kCanAutomate,
+           [](ControllerCore&, double) { return ErrorCode::kSuccess; },
+           [](ProcessorProxy& vc, const double value) {
+             return vc.GetCore()->SetReverbDecay(value);
+           })},
+      {ParameterID::kReverbTone,
+       NumberParameter(
+           u8"Tone"s, 50.0, 0.0, 100.0, u8"%"s, 100, u8"RevTone"s,
+           parameter_flag::kCanAutomate,
+           [](ControllerCore&, double) { return ErrorCode::kSuccess; },
+           [](ProcessorProxy& vc, const double value) {
+             return vc.GetCore()->SetReverbTone(value);
            })},
       {ParameterID::kIntonationIntensity,
        NumberParameter(
@@ -373,7 +452,7 @@ const ParameterSchema kSchema = [] {
            })},
       {ParameterID::kMinSourcePitch,
        NumberParameter(
-           u8"Min Source Pitch"s, 33.125, 0.0, 128.0, u8""s, 128 * 8,
+           u8"Min Source Pitch"s, 33.1, 0.0, 128.0, u8""s, 128 * 10,
            u8"MinPit"s, parameter_flag::kCanAutomate,
            [](ControllerCore&, double) { return ErrorCode::kSuccess; },
            [](ProcessorProxy& vc, const double value) {
@@ -381,7 +460,7 @@ const ParameterSchema kSchema = [] {
            })},
       {ParameterID::kMaxSourcePitch,
        NumberParameter(
-           u8"Max Source Pitch"s, 80.875, 0.0, 128.0, u8""s, 128 * 8,
+           u8"Max Source Pitch"s, 80.9, 0.0, 128.0, u8""s, 128 * 10,
            u8"MaxPit"s, parameter_flag::kCanAutomate,
            [](ControllerCore&, double) { return ErrorCode::kSuccess; },
            [](ProcessorProxy& vc, const double value) {
@@ -422,6 +501,32 @@ const ParameterSchema kSchema = [] {
            u8"MrphCt"s, parameter_flag::kCanAutomate,
            SetVoiceMorphParameterOnController,
            SetVoiceMorphParameterOnProcessor)},
+      {ParameterID::kSimpleMorphWeights,
+       StringParameter(
+           u8"Simple Morph Weights"s, u8"1"s, false,
+           [](ControllerCore&, const std::u8string&) {
+             return ErrorCode::kSuccess;
+           },
+           [](ProcessorProxy& vc, const std::u8string& value) {
+             return vc.GetCore()->SetSpeakerMorphingWeights(
+                 ParseSimpleMorphWeights(value));
+           })},
+      {ParameterID::kPresetData,
+       StringParameter(
+           u8"Preset Data"s, u8""s, false,
+           [](ControllerCore&, const std::u8string&) {
+             return ErrorCode::kSuccess;
+           },
+           [](ProcessorProxy&, const std::u8string&) {
+             return ErrorCode::kSuccess;
+           })},
+      {ParameterID::kLatencyReporting,
+       ListParameter(
+           u8"Latency Reporting"s,
+           {u8"Off — Responsive"s, u8"On — DAW-Compensated"s}, 0,
+           u8"LatRpt"s, parameter_flag::kIsList,
+           [](ControllerCore&, int) { return ErrorCode::kSuccess; },
+           [](ProcessorProxy&, int) { return ErrorCode::kSuccess; })},
   });
 
   for (auto i = 0; i < kMaxNVoiceMorphMarkers; ++i) {

@@ -3,6 +3,7 @@
 #ifndef BEATRICE_VST_EDITOR_MORPH_CONTROLLER_H_
 #define BEATRICE_VST_EDITOR_MORPH_CONTROLLER_H_
 
+#include <functional>
 #include <vector>
 
 #include "vst3sdk/pluginterfaces/vst/vsttypes.h"
@@ -21,7 +22,8 @@ class MorphPadController final : public VSTGUI::IControlListener {
 
  public:
   MorphPadController(const common::ControllerCore& core,
-                     Steinberg::Vst::EditController& controller);
+                     Steinberg::Vst::EditController& controller,
+                     std::function<void()> edit_finished);
 
   void valueChanged(VSTGUI::CControl* control) override;
   void controlBeginEdit(VSTGUI::CControl* control) override;
@@ -32,6 +34,7 @@ class MorphPadController final : public VSTGUI::IControlListener {
   Steinberg::Vst::EditController& controller_;
   std::vector<ParamID> edited_param_ids_;
   bool editing_ = false;
+  std::function<void()> edit_finished_;
 };
 
 }  // namespace beatrice::vst

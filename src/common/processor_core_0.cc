@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cassert>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 
@@ -13,10 +14,36 @@
 namespace beatrice::common {
 
 auto ProcessorCore0::GetVersion() const -> int { return 0; }
-auto ProcessorCore0::Process(const float* const input, float* const output,
-                             const int n_samples) -> ErrorCode {
-  const auto fill_zero = [output, n_samples] {
+auto ProcessorCore0::GetLatencySamples() const -> int {
+  const auto sample_rate = any_freq_in_out_.GetSampleRate();
+  return static_cast<int>(std::round(
+      0.0375 * sample_rate + any_freq_in_out_.GetLatencySamples()));
+}
+auto ProcessorCore0::ProcessWithoutConversion(const float* const input,
+                                               float* const output,
+                                               const int n_samples)
+    -> ErrorCode {
+  if (!bypass_input_gain_context_.IsReady()) {
     std::memset(output, 0, sizeof(float) * n_samples);
+    return ErrorCode::kGainNotReady;
+  }
+  if (!bypass_output_gain_context_.IsReady()) {
+    std::memset(output, 0, sizeof(float) * n_samples);
+    return ErrorCode::kGainNotReady;
+  }
+  bypass_input_cleanup_.Process(input, output, n_samples);
+  gain_.Process(output, output, n_samples, bypass_input_gain_context_);
+  gain_.Process(output, output, n_samples, bypass_output_gain_context_);
+  return ErrorCode::kSuccess;
+}
+auto ProcessorCore0::Process(const float* const input, float* const output,
+                             const int n_samples,
+                             float* const output_right) -> ErrorCode {
+  const auto fill_zero = [output, output_right, n_samples] {
+    std::memset(output, 0, sizeof(float) * n_samples);
+    if (output_right != nullptr) {
+      std::memset(output_right, 0, sizeof(float) * n_samples);
+    }
   };
   if (!IsLoaded()) {
     return fill_zero(), ErrorCode::kModelNotLoaded;
@@ -41,9 +68,36 @@ auto ProcessorCore0::Process(const float* const input, float* const output,
   }
   assert(static_cast<int>(formant_shift_embeddings_.size()) ==
          9 * BEATRICE_WAVEFORM_GENERATOR_HIDDEN_CHANNELS);
-  gain_.Process(input, output, n_samples, input_gain_context_);
+  input_cleanup_.Process(input, output, n_samples);
+  gain_.Process(output, output, n_samples, input_gain_context_);
   any_freq_in_out_(output, output, n_samples, *this);
+  ProcessOutputEffects(output, output_right, n_samples);
+  auto right_gain_context = output_gain_context_;
   gain_.Process(output, output, n_samples, output_gain_context_);
+  if (output_right != nullptr) {
+    gain_.Process(output_right, output_right, n_samples, right_gain_context);
+  }
+  return ErrorCode::kSuccess;
+}
+
+auto ProcessorCore0::ProcessOutputEffectsTail(float* const output,
+                                               float* const output_right,
+                                               const int n_samples)
+    -> ErrorCode {
+  if (!output_gain_context_.IsReady()) {
+    std::memset(output, 0, sizeof(float) * n_samples);
+    if (output_right != nullptr) {
+      std::memset(output_right, 0, sizeof(float) * n_samples);
+    }
+    return ErrorCode::kGainNotReady;
+  }
+  std::memset(output, 0, sizeof(float) * n_samples);
+  ProcessOutputEffects(output, output_right, n_samples);
+  auto right_gain_context = output_gain_context_;
+  gain_.Process(output, output, n_samples, output_gain_context_);
+  if (output_right != nullptr) {
+    gain_.Process(output_right, output_right, n_samples, right_gain_context);
+  }
   return ErrorCode::kSuccess;
 }
 
@@ -143,6 +197,9 @@ void ProcessorCore0::Process1(const float* const input, float* const output) {
 }
 
 auto ProcessorCore0::ResetContext() -> ErrorCode {
+  ResetOutputEffects();
+  input_cleanup_.Reset();
+  bypass_input_cleanup_.Reset();
   Beatrice20a2_DestroyPhoneContext1(phone_context_);
   Beatrice20a2_DestroyPitchContext1(pitch_context_);
   Beatrice20a2_DestroyWaveformContext1(waveform_context_);
@@ -218,12 +275,17 @@ auto ProcessorCore0::LoadModel(const ModelConfig& /*config*/,
 }
 
 auto ProcessorCore0::SetSampleRate(const double new_sample_rate) -> ErrorCode {
+  SetOutputEffectsSampleRate(new_sample_rate);
+  input_gain_context_.SetSampleRate(new_sample_rate);
+  output_gain_context_.SetSampleRate(new_sample_rate);
+  bypass_input_gain_context_.SetSampleRate(new_sample_rate);
+  bypass_output_gain_context_.SetSampleRate(new_sample_rate);
+  input_cleanup_.SetSampleRate(new_sample_rate);
+  bypass_input_cleanup_.SetSampleRate(new_sample_rate);
   if (new_sample_rate == any_freq_in_out_.GetSampleRate()) {
     return ErrorCode::kSuccess;
   }
   any_freq_in_out_.SetSampleRate(new_sample_rate);
-  input_gain_context_.SetSampleRate(new_sample_rate);
-  output_gain_context_.SetSampleRate(new_sample_rate);
   return ErrorCode::kSuccess;
 }
 
@@ -248,12 +310,51 @@ auto ProcessorCore0::SetPitchShift(const double new_pitch_shift) -> ErrorCode {
 }
 
 auto ProcessorCore0::SetInputGain(const double new_input_gain) -> ErrorCode {
-  input_gain_context_.SetTargetGain(new_input_gain);
+  input_gain_ = new_input_gain;
+  UpdateGainTargets();
   return ErrorCode::kSuccess;
 }
 
 auto ProcessorCore0::SetOutputGain(const double new_output_gain) -> ErrorCode {
-  output_gain_context_.SetTargetGain(new_output_gain);
+  output_gain_ = new_output_gain;
+  UpdateGainTargets();
+  return ErrorCode::kSuccess;
+}
+
+auto ProcessorCore0::SetCompensatedDrive(const double drive) -> ErrorCode {
+  compensated_drive_ = std::clamp(drive, 0.0, 20.0);
+  UpdateGainTargets();
+  return ErrorCode::kSuccess;
+}
+
+void ProcessorCore0::UpdateGainTargets() {
+  input_gain_context_.SetTargetGain(compensated_drive_ > 0.0
+                                        ? compensated_drive_
+                                        : input_gain_);
+  output_gain_context_.SetTargetGain(
+      std::clamp(output_gain_ - compensated_drive_, -60.0, 20.0));
+  bypass_input_gain_context_.SetTargetGain(compensated_drive_ > 0.0
+                                               ? compensated_drive_
+                                               : input_gain_);
+  bypass_output_gain_context_.SetTargetGain(
+      std::clamp(output_gain_ - compensated_drive_, -60.0, 20.0));
+}
+
+auto ProcessorCore0::SetLowCutHz(const double low_cut_hz) -> ErrorCode {
+  input_cleanup_.SetLowCutHz(low_cut_hz);
+  bypass_input_cleanup_.SetLowCutHz(low_cut_hz);
+  return ErrorCode::kSuccess;
+}
+
+auto ProcessorCore0::SetLightDenoise(const int denoise_mode) -> ErrorCode {
+  input_cleanup_.SetDenoiseMode(denoise_mode);
+  bypass_input_cleanup_.SetDenoiseMode(denoise_mode);
+  return ErrorCode::kSuccess;
+}
+
+auto ProcessorCore0::SetDeClickStrength(const double strength) -> ErrorCode {
+  input_cleanup_.SetDeClickStrength(strength);
+  bypass_input_cleanup_.SetDeClickStrength(strength);
   return ErrorCode::kSuccess;
 }
 

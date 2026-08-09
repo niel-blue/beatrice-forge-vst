@@ -5,6 +5,7 @@
 
 #include <map>
 #include <mutex>  // NOLINT(build/c++11)
+#include <vector>
 
 #include "vst3sdk/pluginterfaces/base/ibstream.h"
 #include "vst3sdk/pluginterfaces/vst/ivstaudioprocessor.h"
@@ -40,6 +41,7 @@ class Processor : public Steinberg::Vst::AudioEffect {
 
   auto PLUGIN_API setupProcessing(ProcessSetup& setup) -> tresult SMTG_OVERRIDE;
   auto PLUGIN_API setActive(TBool state) -> tresult SMTG_OVERRIDE;
+  auto PLUGIN_API getLatencySamples() -> uint32 SMTG_OVERRIDE;
   auto PLUGIN_API process(ProcessData& data) -> tresult SMTG_OVERRIDE;
 
   auto PLUGIN_API setState(IBStream* state) -> tresult SMTG_OVERRIDE;
@@ -57,6 +59,10 @@ class Processor : public Steinberg::Vst::AudioEffect {
   common::ProcessorProxy vc_core_;
   // メモリ確保が挟まるのが望ましくないが……
   std::map<ParamID, ParamValue> unreflected_params_;
+  std::vector<float> dry_buffer_;
+  std::vector<float> bypass_buffer_;
+  float bypass_mix_ = 0.0F;
+  float bypass_mix_step_ = 1.0F;
 };
 
 }  // namespace beatrice::vst

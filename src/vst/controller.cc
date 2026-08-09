@@ -14,6 +14,7 @@
 #include "vst3sdk/pluginterfaces/base/fplatform.h"
 #include "vst3sdk/pluginterfaces/base/funknown.h"
 #include "vst3sdk/pluginterfaces/vst/ivstunits.h"
+#include "vst3sdk/pluginterfaces/vst/ivsteditcontroller.h"
 #include "vst3sdk/public.sdk/source/vst/utility/stringconvert.h"
 #include "vst3sdk/public.sdk/source/vst/vsteditcontroller.h"
 #include "vst3sdk/public.sdk/source/vst/vstparameters.h"
@@ -71,6 +72,10 @@ auto PLUGIN_API Controller::initialize(FUnknown* const context) -> tresult {
                                 reinterpret_cast<const char*>(value.c_str()))
                                 .c_str());
       }
+      const auto default_normalized =
+          param->toNormalized(list_param->GetDefaultValue());
+      param->getInfo().defaultNormalizedValue = default_normalized;
+      param->setNormalized(default_normalized);
       parameters.addParameter(param);
     } else if (std::get_if<common::StringParameter>(&param)) {
     } else {
@@ -123,6 +128,9 @@ auto PLUGIN_API Controller::setComponentState(IBStream* const state)
     } else {
       assert(false);
     }
+  }
+  if (componentHandler) {
+    componentHandler->restartComponent(Steinberg::Vst::kLatencyChanged);
   }
   state->seek(0, IBStream::IStreamSeekMode::kIBSeekSet);
   return kResultTrue;
@@ -196,6 +204,17 @@ void Controller::SetStringParameter(const ParamID vst_param_id,
   for (auto&& editor : editors_) {
     editor->SyncStringValue(vst_param_id, value);
   }
+}
+
+auto PLUGIN_API Controller::notify(IMessage* const message) -> tresult {
+  if (std::strcmp(message->getMessageID(), "latency_changed") == 0) {
+    if (componentHandler) {
+      return componentHandler->restartComponent(
+          Steinberg::Vst::kLatencyChanged);
+    }
+    return kResultTrue;
+  }
+  return EditController::notify(message);
 }
 
 }  // namespace beatrice::vst

@@ -4,8 +4,32 @@
 
 #include <memory>
 #include <string>
+#include <type_traits>
 
 namespace beatrice::common {
+
+namespace {
+
+auto ValueMatchesParameter(const ParameterState::Value& value,
+                           const ParameterVariant& parameter) -> bool {
+  return std::visit(
+      [&value](const auto& parameter_type) {
+        using T = std::decay_t<decltype(parameter_type)>;
+        if constexpr (std::is_same_v<T, NumberParameter>) {
+          return std::holds_alternative<double>(value);
+        } else if constexpr (std::is_same_v<T, ListParameter>) {
+          return std::holds_alternative<int>(value);
+        } else if constexpr (std::is_same_v<T, StringParameter>) {
+          return std::holds_alternative<
+              std::unique_ptr<std::u8string>>(value);
+        } else {
+          return false;
+        }
+      },
+      parameter);
+}
+
+}  // namespace
 
 ParameterState::ParameterState(const ParameterState& rhs) {
   for (const auto& [param_id, value] : rhs.states_) {
@@ -119,9 +143,30 @@ auto ParameterState::Read(std::istream& is) -> ErrorCode {
 auto ParameterState::ReadOrSetDefault(std::istream& is,
                                       const ParameterSchema& schema)
     -> ErrorCode {
-  states_.clear();
-  SetDefaultValues(schema);
-  return Read(is);
+  // Read into a temporary state first. This makes a state with an obsolete or
+  // colliding parameter ID harmless: the caller receives a fully defaulted
+  // state instead of a partially loaded state with values of the wrong type.
+  ParameterState defaults;
+  defaults.SetDefaultValues(schema);
+
+  ParameterState loaded;
+  loaded.SetDefaultValues(schema);
+  const auto error_code = loaded.Read(is);
+  if (error_code != ErrorCode::kSuccess) {
+    states_.swap(defaults.states_);
+    return error_code;
+  }
+
+  for (const auto& [param_id, value] : loaded.states_) {
+    const auto* const parameter = schema.FindParameter(param_id);
+    if (parameter == nullptr || !ValueMatchesParameter(value, *parameter)) {
+      states_.swap(defaults.states_);
+      return ErrorCode::kUnknownError;
+    }
+  }
+
+  states_.swap(loaded.states_);
+  return ErrorCode::kSuccess;
 }
 
 auto ParameterState::Write(std::ostream& os) const -> ErrorCode {

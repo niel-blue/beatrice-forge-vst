@@ -8,31 +8,43 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "vst3sdk/pluginterfaces/base/fplatform.h"
 #include "vst3sdk/pluginterfaces/vst/vsttypes.h"
 #include "vst3sdk/public.sdk/source/vst/vstguieditor.h"
 #include "vst3sdk/vstgui4/vstgui/lib/cview.h"
 #include "vst3sdk/vstgui4/vstgui/lib/cviewcontainer.h"
+#include "vst3sdk/vstgui4/vstgui/lib/cvstguitimer.h"
 #include "vst3sdk/vstgui4/vstgui/lib/vstguifwd.h"
 
 // Beatrice
 #include "common/model_config.h"
+#include "common/preset.h"
+#include "common/simple_morph.h"
 #include "common/voice_morph_state.h"
 #include "vst/controls.h"
+#include "vst/editor_layout.h"
+#include "vst/editor_theme.h"
+#include "vst/editor_typography.h"
 
 namespace beatrice::vst {
 
-static constexpr auto kWindowWidth = 1280;
-static constexpr auto kWindowHeight = 720;
+static constexpr auto kWindowWidth = static_cast<int>(layout::kWindowWidth);
+static constexpr auto kWindowHeight = static_cast<int>(layout::kWindowHeight);
 
 class DescriptionPane;
 class DescriptionPopupView;
+enum class DescriptionTarget;
 class MorphFalloffSlider;
 class MorphPadController;
 class MorphPadView;
+class SimpleMorphPanel;
+class PresetPanel;
 class VoiceMenuOverlayView;
 class VoiceSelectorView;
+class SurfacePanel;
+class GlowingActionLabel;
 
 // NOLINTNEXTLINE(misc-multiple-inheritance)
 class Editor : public Steinberg::Vst::VSTGUIEditor, public IControlListener {
@@ -57,9 +69,13 @@ class Editor : public Steinberg::Vst::VSTGUIEditor, public IControlListener {
   //                       const char* message) -> CMessageResult SMTG_OVERRIDE;
 
  private:
-  static constexpr auto kPortraitWidth = 480;
+  enum class FocusColumn { kNone, kSettings, kVoice, kPresets };
+  static constexpr auto kPortraitWidth = static_cast<int>(layout::kPortraitSize);
   static constexpr auto kPortraitHeight = kPortraitWidth;
   void SyncSourcePitchRange();
+  void UpdateSourcePitchVisibility();
+  void UpdateCompensatedDriveUi();
+  void UpdateBypassUi(bool bypassed);
   void SyncModelDescription();
   void SyncParameterAvailability();
   void SelectPage(int page);
@@ -73,26 +89,91 @@ class Editor : public Steinberg::Vst::VSTGUIEditor, public IControlListener {
   void RebuildVoiceMenu();
   void SelectVoice(int voice_id);
   [[nodiscard]] auto GetVoiceControl() const -> VSTGUI::COptionMenu*;
-  void ShowDescriptionPopup(const char* title, const std::u8string& text,
-                            CRect size);
+  void ShowDescriptionPopup(DescriptionTarget target, const char* title,
+                            const std::u8string& text, CRect target_rect);
   void HideDescriptionPopup();
   void UpdateVoiceMorphingDescription();
   void ApplyVoiceMorphState(const common::VoiceMorphState& state);
+  void SetSimpleMorphMode(bool simple);
+  void UpdateMorphUiVisibility(bool morphing);
+  void ResetMorph(bool simple);
+  void ApplySimpleMorphWeights(const common::SimpleMorphWeights& weights,
+                               int voice_count, bool save_now = true);
+  void AddCurrentPreset();
+  void CreateNewPreset();
+  [[nodiscard]] auto CurrentModelVoicePresetName() -> std::string;
+  auto RenameSelectedPresetFromCurrentModelVoice() -> bool;
+  void ApplyPreset(int index);
+  void RenamePreset(int index, const std::string& name);
+  void MovePreset(int index, int destination);
+  void DeletePreset(int index);
+  void RefreshPresetPanel(int selected = -1);
+  void SelectRightPanel(bool effects);
+  void SavePresets();
+  void ImportPresets(int mode);
+  void ExportPresets(bool all_banks);
+  void AddPresetBank();
+  void SelectPresetBank(int index);
+  void RenamePresetBank(int index, const std::string& name);
+  void MovePresetBank(int index, int destination);
+  void DeletePresetBank(int index);
+  void SyncCurrentPresetBank();
+  void LoadCurrentPresetBank();
+  void UpdateSelectedPresetFromCurrentState(ParamID changed_parameter,
+                                            bool save_now);
+  void ScheduleDeferredPresetSave();
+  void FlushDeferredPresetSave();
   void PerformParameterEdit(ParamID param_id, ParamValue normalized_value);
   void SendParameterEdit(ParamID param_id, ParamValue normalized_value);
+  void SetFocusedColumn(FocusColumn column);
+  void FocusColumnRoot(FocusColumn column);
+  void RegisterFocusColumn(FocusColumn role, SurfacePanel* panel);
+  [[nodiscard]] auto ColumnForView(const CView* view) const -> FocusColumn;
+  // Reserved for a future Options/help switch. This is a UI preference, not
+  // a VST parameter or preset value.
+  void SetControlHelpEnabled(bool enabled);
 
   std::map<ParamID, CControl*> controls_;
-  CFontRef font_, font_bold_, font_description_, font_small_;
+  CFontRef font_, font_bold_, font_description_, font_small_, font_small_bold_,
+      font_tab_;
   CFontRef font_heading_, font_strong_;
+  bool control_help_enabled_ = true;
+  bool japanese_tooltips_ = false;
   std::optional<common::ModelConfig> model_config_;
+  CViewContainer* source_pitch_panel_ = nullptr;
 
   // Portrait / morph
   CView* portrait_view_ = nullptr;
+  CViewContainer* portrait_panel_ = nullptr;
   CView* unloaded_logo_view_ = nullptr;
   std::unique_ptr<MorphPadController> morph_pad_controller_;
   MorphPadView* morph_pad_view_ = nullptr;
+  SimpleMorphPanel* simple_morph_panel_ = nullptr;
+  CViewContainer* morph_mode_switch_ = nullptr;
+  CTextLabel* simple_morph_tab_ = nullptr;
+  CTextLabel* advanced_morph_tab_ = nullptr;
+  bool simple_morph_mode_ = true;
+  bool morphing_active_ = false;
+
+  // Presets shared with the future standalone client.
+  std::vector<common::Preset> presets_;
+  int selected_preset_ = -1;
+  // The preset whose settings are currently active.  This is kept separate
+  // from the bank currently being viewed so changing banks does not make a
+  // remembered row appear selected in the new bank.
+  int active_preset_bank_ = -1;
+  common::PresetWorkspace preset_workspace_;
+  bool applying_preset_ = false;
+  bool preset_save_pending_ = false;
+  VSTGUI::SharedPointer<VSTGUI::CVSTGUITimer> preset_save_timer_;
+  bool rename_selected_preset_after_model_load_ = false;
+  PresetPanel* preset_panel_ = nullptr;
+  SurfacePanel* effects_panel_ = nullptr;
+  GlowingActionLabel* presets_tab_ = nullptr;
+  GlowingActionLabel* effects_tab_ = nullptr;
   DescriptionPane* portrait_description_pane_ = nullptr;
   MorphFalloffSlider* morph_falloff_slider_ = nullptr;
+  CTextLabel* morph_reset_button_ = nullptr;
 
   // Model / Voice Description
   DescriptionPane* model_description_pane_ = nullptr;
@@ -106,10 +187,20 @@ class Editor : public Steinberg::Vst::VSTGUIEditor, public IControlListener {
   DescriptionPopupView* description_popup_ = nullptr;
 
   // Header / Page
+  CTextLabel* conversion_status_label_ = nullptr;
+  GlowingActionLabel* bypass_button_ = nullptr;
   CTextLabel* model_name_label_ = nullptr;
-  std::array<CViewContainer*, 2> page_views_;
-  std::array<CTextLabel*, 2> page_tabs_;
+  std::array<CViewContainer*, 3> page_views_;
+  std::array<CTextLabel*, 3> page_tabs_;
   CView* tab_indicator_ = nullptr;
+  struct FocusColumnEntry {
+    FocusColumn role;
+    SurfacePanel* panel;
+  };
+  // Roles are independent from display order, allowing columns to be moved or
+  // a fourth one to be added without changing focus ownership.
+  std::vector<FocusColumnEntry> focus_columns_;
+  FocusColumn focused_column_ = FocusColumn::kNone;
 
   // Portrait bitmap cache
   std::map<std::u8string, SharedPointer<CBitmap>> portraits_;

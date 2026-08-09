@@ -350,6 +350,12 @@ void DescriptionTextLabel::onMouseDownEvent(VSTGUI::MouseDownEvent& event) {
       event.consumed = true;
       return;
     }
+    if (non_link_click_) {
+      non_link_click_();
+      event.consumed = true;
+      event.ignoreFollowUpMoveAndUpEvents(true);
+      return;
+    }
   }
   CMultiLineTextLabel::onMouseDownEvent(event);
 }

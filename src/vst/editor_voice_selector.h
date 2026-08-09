@@ -19,6 +19,8 @@
 #include "common/model_config.h"
 #include "vst/controls.h"
 #include "vst/editor_description.h"
+#include "vst/editor_layout.h"
+#include "vst/editor_theme.h"
 #include "vst/editor_views.h"
 #include "vst/surface_texture.h"
 
@@ -49,21 +51,21 @@ class VoiceSelectorView final : public CViewContainer {
     setBackgroundColor(kTransparentCColor);
     setTransparency(true);
 
-    portrait_ = new CView(CRect(7, 7, 49, 49));
+    portrait_ = new CView(layout::kVoiceSelectorIconRect);
     portrait_->setMouseEnabled(false);
     portrait_->setVisible(false);
     addView(portrait_);
 
-    morph_icon_ = new MorphSelectorIconView(CRect(7, 7, 49, 49));
+    morph_icon_ = new MorphSelectorIconView(layout::kVoiceSelectorIconRect);
     morph_icon_->setMouseEnabled(false);
     morph_icon_->setVisible(false);
     addView(morph_icon_);
 
-    name_ = new CTextLabel(CRect(60, 17, 398, 42), "", nullptr,
+    name_ = new CTextLabel(layout::kVoiceSelectorNameRect, "", nullptr,
                            CParamDisplay::kNoFrame);
     name_->setBackColor(kTransparentCColor);
     name_->setFont(font_bold);
-    name_->setFontColor(CColor(0xca, 0xc7, 0xc1));
+    name_->setFontColor(theme::kTextPrimary);
     name_->setHoriAlign(CHoriTxtAlign::kLeftText);
     name_->setMouseEnabled(false);
     addView(name_);
@@ -76,6 +78,13 @@ class VoiceSelectorView final : public CViewContainer {
       return VSTGUI::kMouseEventHandled;
     }
     return CViewContainer::onMouseDown(where, buttons);
+  }
+
+  void draw(CDrawContext* const context) override {
+    CViewContainer::draw(context);
+    context->setFrameColor(theme::kPanelBorder);
+    context->setLineWidth(1.0);
+    context->drawRect(getViewSize(), VSTGUI::kDrawStroked);
   }
 
   void SetDisplay(const std::optional<common::ModelConfig>& model_config,
@@ -150,18 +159,27 @@ class VoiceMenuOverlayView final : public CViewContainer {
                                [this]() -> void { HideMenu(); });
     addView(dismiss_overlay);
 
-    menu_panel_ = new SurfacePanel(CRect(808, 242, 1250, 302), panel_surface,
-                                   CColor(0xe2, 0xba, 0x79, 0x1a), 2.0);
+    const auto voice_column_left =
+        layout::kColumnOuterMargin + layout::kColumnWidth + layout::kColumnGap;
+    menu_panel_ = new SurfacePanel(
+        CRect(voice_column_left, layout::kVoiceMenuTop,
+              voice_column_left + layout::kColumnWidth,
+              layout::kVoiceMenuBottom),
+        panel_surface, theme::kPanelBorder, 2.0);
     addView(menu_panel_);
 
-    menu_scroll_ =
-        new VSTGUI::CScrollView(CRect(8, 8, 434, 52), CRect(0, 0, 426, 44),
-                                VSTGUI::CScrollView::kVerticalScrollbar |
-                                    VSTGUI::CScrollView::kDontDrawFrame |
-                                    VSTGUI::CScrollView::kOverlayScrollbars |
-                                    VSTGUI::CScrollView::kAutoHideScrollbars,
-                                6);
-    ApplyScrollbarTheme(menu_scroll_);
+    const auto viewport_width =
+        layout::kColumnWidth - 2.0 * layout::kVoiceMenuInset;
+    menu_scroll_ = new VSTGUI::CScrollView(
+        CRect(layout::kVoiceMenuInset, layout::kVoiceMenuInset,
+              layout::kVoiceMenuInset + viewport_width, 60),
+        CRect(0, 0, viewport_width, layout::kVoiceMenuItemHeight),
+        VSTGUI::CScrollView::kVerticalScrollbar |
+            VSTGUI::CScrollView::kDontDrawFrame |
+            VSTGUI::CScrollView::kOverlayScrollbars |
+            VSTGUI::CScrollView::kAutoHideScrollbars,
+        layout::kVerticalScrollbarWidth);
+    ApplyScrollbarTheme(menu_scroll_, layout::kVoiceMenuMinScrollerLength);
     menu_scroll_->setBackgroundColor(kTransparentCColor);
     menu_scroll_->setTransparency(true);
     menu_panel_->addView(menu_scroll_);
@@ -182,8 +200,13 @@ class VoiceMenuOverlayView final : public CViewContainer {
   }
 
   void HideMenu() {
+    if (isVisible() && menu_scroll_) {
+      remembered_scroll_offset_ = menu_scroll_->getScrollOffset();
+    }
     setVisible(false);
   }
+
+  void ClearRememberedScroll() { remembered_scroll_offset_ = CPoint{}; }
 
   void RebuildMenu(const std::optional<common::ModelConfig>& model_config,
                    const ThumbnailMap& thumbnails,
@@ -200,6 +223,10 @@ class VoiceMenuOverlayView final : public CViewContainer {
     if (!menu_panel_ || !menu_scroll_) {
       return false;
     }
+    if (isVisible()) {
+      remembered_scroll_offset_ = menu_scroll_->getScrollOffset();
+    }
+    menu_scroll_->resetScrollOffset();
     menu_scroll_->removeAll(true);
     if (!model_config.has_value()) {
       HideMenu();
@@ -214,43 +241,49 @@ class VoiceMenuOverlayView final : public CViewContainer {
       return false;
     }
 
-    const auto columns = std::clamp((entry_count + 4) / 5, 1, 5);
-    const auto rows = (entry_count + columns - 1) / columns;
-    const auto item_min_width = 210.0;
-    const auto item_gap = 6.0;
-    const auto item_height = 52.0;
     const auto viewport_width =
-        columns == 1 ? 426.0
-                     : item_min_width * static_cast<double>(columns) +
-                           item_gap * static_cast<double>(columns - 1);
-    const auto item_width =
-        (viewport_width - item_gap * static_cast<double>(columns - 1)) /
-        static_cast<double>(columns);
-    const auto content_height = rows * item_height;
-    const auto viewport_height = std::min(360.0 - 16.0, content_height);
-    const auto panel_height = viewport_height + 16.0;
-    const auto panel_top = 242.0;
-    const auto panel_right = 1250.0;
-    const auto panel_width = viewport_width + 16.0;
-    const auto panel_rect = CRect(panel_right - panel_width, panel_top,
-                                  panel_right, panel_top + panel_height);
+        layout::kColumnWidth - 2.0 * layout::kVoiceMenuInset;
+    const auto item_width = viewport_width - layout::kVerticalScrollbarWidth -
+                            layout::kScrollbarContentGap;
+    const auto content_height =
+        entry_count * layout::kVoiceMenuItemHeight;
+    const auto panel_height =
+        layout::kVoiceMenuBottom - layout::kVoiceMenuTop;
+    const auto viewport_height = panel_height -
+                                 2.0 * layout::kVoiceMenuInset;
+    const auto panel_left =
+        layout::kColumnOuterMargin + layout::kColumnWidth + layout::kColumnGap;
+    const auto panel_rect =
+        CRect(panel_left, layout::kVoiceMenuTop,
+              panel_left + layout::kColumnWidth,
+              layout::kVoiceMenuBottom);
     menu_panel_->setViewSize(panel_rect);
     menu_panel_->setMouseableArea(panel_rect);
     menu_scroll_->setViewSize(
-        CRect(8, 8, 8 + viewport_width, 8 + viewport_height));
+        CRect(layout::kVoiceMenuInset, layout::kVoiceMenuInset,
+              layout::kVoiceMenuInset + viewport_width,
+              layout::kVoiceMenuInset + viewport_height));
     menu_scroll_->setMouseableArea(menu_scroll_->getViewSize());
-    menu_scroll_->setContainerSize(CRect(0, 0, viewport_width, content_height));
-    menu_scroll_->resetScrollOffset();
-
+    menu_scroll_->setContainerSize(
+        CRect(0, 0, viewport_width,
+              std::max(content_height, viewport_height)));
+    if (auto* const scrollbar = menu_scroll_->getVerticalScrollbar()) {
+      const auto scrollable_height = content_height - viewport_height;
+      const auto wheel_increment =
+          scrollable_height > 0.0
+              ? std::min(1.0,
+                         layout::kVoiceMenuItemHeight / scrollable_height)
+              : 1.0;
+      scrollbar->setWheelInc(static_cast<float>(wheel_increment));
+    }
     const auto add_item =
         [&](const int entry_index, const int voice_id, const std::string& label,
             SharedPointer<CBitmap> thumbnail, const bool morph_item) -> void {
-      const auto row = entry_index / columns;
-      const auto column = entry_index % columns;
-      const auto x = column * (item_width + item_gap);
-      const auto y = row * item_height;
+      const auto y = entry_index * layout::kVoiceMenuItemHeight;
       auto* const item = new VoiceMenuItemView(
-          CRect(x, y, x + item_width, y + 48.0), label, std::move(thumbnail),
+          CRect(0, y, item_width,
+                y + layout::kVoiceMenuItemSurfaceHeight), label,
+          std::move(thumbnail),
           morph_item, selected_voice_id == voice_id, font_,
           [this, voice_id]() -> void {
             HideMenu();
@@ -276,6 +309,7 @@ class VoiceMenuOverlayView final : public CViewContainer {
     if (has_morph) {
       add_item(entry_index, voice_count, "Voice Morphing Mode", nullptr, true);
     }
+    menu_scroll_->setScrollOffset(remembered_scroll_offset_);
     menu_scroll_->invalid();
     menu_panel_->invalid();
     return true;
@@ -285,6 +319,7 @@ class VoiceMenuOverlayView final : public CViewContainer {
   SelectVoiceAction select_voice_action_;
   SurfacePanel* menu_panel_ = nullptr;
   VSTGUI::CScrollView* menu_scroll_ = nullptr;
+  CPoint remembered_scroll_offset_;
 };
 
 }  // namespace beatrice::vst

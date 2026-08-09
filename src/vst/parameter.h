@@ -20,12 +20,11 @@ inline auto Normalize(const common::NumberParameter& param,
                       const double plain_value) -> double {
   auto normalized = (plain_value - param.GetMinValue()) /
                     (param.GetMaxValue() - param.GetMinValue());
-  if (param.GetDivisions() > 0) {
-    normalized =
-        std::floor(normalized * static_cast<double>(param.GetDivisions() + 1)) /
-        static_cast<double>(param.GetDivisions());
-  }
   normalized = std::clamp(normalized, 0.0, 1.0);
+  if (param.GetDivisions() > 0) {
+    const auto divisions = static_cast<double>(param.GetDivisions());
+    normalized = std::round(normalized * divisions) / divisions;
+  }
   return normalized;
 }
 
@@ -37,13 +36,13 @@ inline auto Normalize(const common::ListParameter& param, const int plain_value)
 
 inline auto Denormalize(const common::NumberParameter& param,
                         const double normalized_value) -> double {
-  auto plain = normalized_value;
+  auto normalized = std::clamp(normalized_value, 0.0, 1.0);
   if (param.GetDivisions() > 0) {
-    plain = std::floor(plain * static_cast<double>(param.GetDivisions() + 1)) /
-            static_cast<double>(param.GetDivisions());
+    const auto divisions = static_cast<double>(param.GetDivisions());
+    normalized = std::round(normalized * divisions) / divisions;
   }
-  plain =
-      plain * (param.GetMaxValue() - param.GetMinValue()) + param.GetMinValue();
+  auto plain = normalized * (param.GetMaxValue() - param.GetMinValue()) +
+               param.GetMinValue();
   plain = std::clamp(plain, param.GetMinValue(), param.GetMaxValue());
   return plain;
 }

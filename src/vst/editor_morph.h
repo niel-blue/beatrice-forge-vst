@@ -19,6 +19,8 @@
 #include "vst3sdk/vstgui4/vstgui/lib/controls/coptionmenu.h"
 #include "vst3sdk/vstgui4/vstgui/lib/vstguibase.h"
 #include "vst3sdk/vstgui4/vstgui/lib/vstguifwd.h"
+#include "vst/editor_theme.h"
+#include "vst/editor_layout.h"
 
 // Beatrice
 #include "common/model_config.h"
@@ -74,14 +76,6 @@ class MorphPadView final : public CControl {
     return state_;
   }
 
-  void SetShowAuxiliaryLabels(const bool show) {
-    if (show_auxiliary_labels_ == show) {
-      return;
-    }
-    show_auxiliary_labels_ = show;
-    invalid();
-  }
-
   auto onMouseDown(CPoint& where, const CButtonState& buttons)
       -> CMouseEventResult override {
     if (buttons.isRightButton()) {
@@ -105,7 +99,6 @@ class MorphPadView final : public CControl {
     if (move_cursor) {
       SetCursorFromPoint(where);
     }
-    SetShowAuxiliaryLabels(true);
     return VSTGUI::kMouseEventHandled;
   }
 
@@ -131,7 +124,6 @@ class MorphPadView final : public CControl {
       endEdit();
     }
     drag_target_ = kNoDragTarget;
-    SetShowAuxiliaryLabels(false);
     return VSTGUI::kMouseEventHandled;
   }
 
@@ -143,7 +135,6 @@ class MorphPadView final : public CControl {
       invalid();
     }
     drag_target_ = kNoDragTarget;
-    SetShowAuxiliaryLabels(false);
     return VSTGUI::kMouseEventHandled;
   }
 
@@ -151,22 +142,22 @@ class MorphPadView final : public CControl {
     auto rect = getViewSize();
     context->saveGlobalState();
     context->setDrawMode(kAntiAliasing);
-    context->setFillColor(CColor(0x0f, 0x0e, 0x0d));
+    context->setFillColor(theme::kMorphGridBackground);
     context->drawRect(rect, kDrawFilled);
 
     auto grid = rect;
     grid.inset(0.5, 0.5);
-    context->setFillColor(CColor(0x10, 0x0f, 0x0e));
-    context->setFrameColor(CColor(0xc3, 0xa0, 0x66, 0x52));
+    context->setFillColor(theme::kMorphGridBackground);
+    context->setFrameColor(theme::WithAlpha(theme::kSliderHandle, 0x52));
     context->drawRect(grid, kDrawFilledAndStroked);
     for (int i = 1; i < 12; ++i) {
       const auto x = grid.left + grid.getWidth() * i / 12.0;
       const auto y = grid.top + grid.getHeight() * i / 12.0;
-      context->setFrameColor(CColor(0xc3, 0xa0, 0x66, 0x24));
+      context->setFrameColor(theme::WithAlpha(theme::kSliderHandle, 0x24));
       context->drawLine(CPoint(x, grid.top), CPoint(x, grid.bottom));
       context->drawLine(CPoint(grid.left, y), CPoint(grid.right, y));
     }
-    context->setFrameColor(CColor(0xc3, 0xa0, 0x66, 0x38));
+    context->setFrameColor(theme::WithAlpha(theme::kSliderHandle, 0x38));
     context->drawLine(CPoint(grid.left + grid.getWidth() / 2.0, grid.top),
                       CPoint(grid.left + grid.getWidth() / 2.0, grid.bottom));
     context->drawLine(CPoint(grid.left, grid.top + grid.getHeight() / 2.0),
@@ -190,16 +181,15 @@ class MorphPadView final : public CControl {
       constexpr auto kMaxLineAlpha = 0xf8;
       const auto alpha = static_cast<uint8_t>(std::clamp(
           kMinLineAlpha + static_cast<int>(t * 208.0f), 0, kMaxLineAlpha));
-      const auto line_red = static_cast<uint8_t>(
-          std::clamp(0xc3 + static_cast<int>(t * 0x3c), 0, 0xff));
       if (t > 0.28f) {
         const auto halo_alpha = static_cast<uint8_t>(
             std::clamp(static_cast<int>(t * 0x48), 0, 0x48));
-        context->setFrameColor(CColor(line_red, 0xa0, 0x66, halo_alpha));
+        context->setFrameColor(
+            theme::WithAlpha(theme::kSliderHandle, halo_alpha));
         context->setLineWidth(2.5 + t * 2.5);
         context->drawLine(center, point);
       }
-      context->setFrameColor(CColor(line_red, 0xa0, 0x66, alpha));
+      context->setFrameColor(theme::WithAlpha(theme::kSliderHandle, alpha));
       context->setLineWidth(0.55 + t * 3.15);
       context->drawLine(center, point);
     }
@@ -208,55 +198,65 @@ class MorphPadView final : public CControl {
     for (auto i = 0; i < state_.marker_count; ++i) {
       const auto& marker_state = state_.markers[i];
       const auto point = NormalizedToPoint(marker_state.x, marker_state.y);
-      const auto marker =
-          CRect(point.x - 29, point.y - 29, point.x + 29, point.y + 29);
-      context->setFillColor(CColor(0x1d, 0x19, 0x14));
-      context->setFrameColor(CColor(0xeb, 0xca, 0x89, 0x84));
+      const auto marker = CRect(
+          point.x - layout::kMorphMarkerRadius,
+          point.y - layout::kMorphMarkerRadius,
+          point.x + layout::kMorphMarkerRadius,
+          point.y + layout::kMorphMarkerRadius);
+      context->setFillColor(theme::kMorphMarkerBackground);
+      context->setFrameColor(theme::kMorphMarkerFrame);
       context->drawEllipse(marker, kDrawFilledAndStroked);
       const auto voice_id = marker_state.voice_id;
       if (voice_id >= 0 && voice_id < voice_bitmap_count &&
           voice_bitmaps_[voice_id]) {
         voice_bitmaps_[voice_id]->draw(context, marker);
       }
-      context->setFrameColor(CColor(0xeb, 0xca, 0x89, 0x84));
+      context->setFrameColor(theme::kMorphMarkerFrame);
       context->drawEllipse(marker, kDrawStroked);
-      context->setFillColor(CColor(0xd8, 0xb3, 0x6c));
-      context->setFrameColor(CColor(0x15, 0x11, 0x0a, 0xa0));
-      context->drawEllipse(
-          CRect(point.x + 10, point.y + 10, point.x + 28, point.y + 28),
-          kDrawFilledAndStroked);
+      context->setFillColor(theme::kMorphCursor);
+      context->setFrameColor(theme::kMorphCursorFrame);
+      const auto badge = CRect(
+          point.x + layout::kMorphBadgeInset,
+          point.y + layout::kMorphBadgeInset,
+          point.x + layout::kMorphBadgeInset + layout::kMorphBadgeSize,
+          point.y + layout::kMorphBadgeInset + layout::kMorphBadgeSize);
+      context->drawEllipse(badge, kDrawFilledAndStroked);
       const auto label = std::to_string(i + 1);
       context->setFont(label_font_);
-      context->setFontColor(CColor(0x17, 0x12, 0x0a));
+      context->setFontColor(theme::kTextOnWarm);
       context->drawString(
           label.c_str(),
-          CRect(point.x + 10, point.y + 10, point.x + 28, point.y + 28),
-          CHoriTxtAlign::kCenterText);
+          badge, CHoriTxtAlign::kCenterText);
     }
-    context->setFrameColor(CColor(0x15, 0x11, 0x0a));
-    context->drawLine(CPoint(center.x, center.y - 26),
-                      CPoint(center.x, center.y + 26));
-    context->drawLine(CPoint(center.x - 26, center.y),
-                      CPoint(center.x + 26, center.y));
-    context->setFillColor(CColor(0xd8, 0xb3, 0x6c));
-    context->setFrameColor(CColor(0x06, 0x06, 0x05));
+    context->setFrameColor(theme::kMorphCursorFrame);
+    context->drawLine(
+        CPoint(center.x, center.y - layout::kMorphAxisHalfLength),
+        CPoint(center.x, center.y + layout::kMorphAxisHalfLength));
+    context->drawLine(
+        CPoint(center.x - layout::kMorphAxisHalfLength, center.y),
+        CPoint(center.x + layout::kMorphAxisHalfLength, center.y));
+    context->setFillColor(theme::kMorphCursor);
+    context->setFrameColor(theme::kMorphCursorFrame);
     context->drawEllipse(
-        CRect(center.x - 14, center.y - 14, center.x + 14, center.y + 14),
+        CRect(center.x - layout::kMorphCursorRadius,
+              center.y - layout::kMorphCursorRadius,
+              center.x + layout::kMorphCursorRadius,
+              center.y + layout::kMorphCursorRadius),
         kDrawFilledAndStroked);
-    if (show_auxiliary_labels_) {
-      for (auto i = 0; i < state_.marker_count; ++i) {
-        const auto& marker = state_.markers[i];
-        DrawVoiceName(context, NormalizedToPoint(marker.x, marker.y),
-                      marker.voice_id);
+    // Morph names and weights are always visible.  They are part of the
+    // normal pad presentation rather than a temporary drag overlay.
+    for (auto i = 0; i < state_.marker_count; ++i) {
+      const auto& marker = state_.markers[i];
+      DrawVoiceName(context, NormalizedToPoint(marker.x, marker.y),
+                    marker.voice_id);
+    }
+    for (auto i = 0; i < state_.marker_count; ++i) {
+      if (marker_weights[i] < common::kVoiceMorphWeightThreshold) {
+        continue;
       }
-      for (auto i = 0; i < state_.marker_count; ++i) {
-        if (marker_weights[i] < common::kVoiceMorphWeightThreshold) {
-          continue;
-        }
-        const auto point =
-            NormalizedToPoint(state_.markers[i].x, state_.markers[i].y);
-        DrawWeightLabel(context, center, point, marker_weights[i]);
-      }
+      const auto point =
+          NormalizedToPoint(state_.markers[i].x, state_.markers[i].y);
+      DrawWeightLabel(context, center, point, marker_weights[i]);
     }
     context->restoreGlobalState();
     setDirty(false);
@@ -460,18 +460,22 @@ class MorphPadView final : public CControl {
 
     const auto center_x = (begin.x + end.x) * 0.5;
     const auto center_y = (begin.y + end.y) * 0.5;
-    auto label_rect = CRect(center_x - 22.0, center_y - 10.0, center_x + 22.0,
-                            center_y + 10.0);
-    context->setFillColor(CColor(0x07, 0x06, 0x05, 0xd8));
-    context->setFrameColor(CColor(0xe0, 0xb8, 0x74, 0x70));
+    auto label_rect = CRect(
+        center_x - layout::kMorphWeightLabelHalfWidth,
+        center_y - layout::kMorphWeightLabelHalfHeight,
+        center_x + layout::kMorphWeightLabelHalfWidth,
+        center_y + layout::kMorphWeightLabelHalfHeight);
+    context->setFillColor(theme::kMorphLabelBackground);
+    context->setFrameColor(theme::kMorphLabelFrame);
     context->setLineWidth(1);
     if (auto path = VSTGUI::owned(
-            context->createRoundRectGraphicsPath(label_rect, 4.0))) {
+            context->createRoundRectGraphicsPath(
+                label_rect, layout::kMorphWeightLabelRadius))) {
       context->drawGraphicsPath(path, CDrawContext::kPathFilled);
       context->drawGraphicsPath(path, CDrawContext::kPathStroked);
     }
     context->setFont(label_font_);
-    context->setFontColor(CColor(0xea, 0xe4, 0xda));
+    context->setFontColor(theme::kTextMorphValue);
     context->drawString(text.c_str(), label_rect, CHoriTxtAlign::kCenterText,
                         true);
   }
@@ -487,18 +491,17 @@ class MorphPadView final : public CControl {
       return;
     }
 
-    constexpr auto kLabelWidth = 120.0;
-    constexpr auto kLabelHeight = 17.0;
-    constexpr auto kMarkerGap = 33.0;
-    const auto left = marker.x - kLabelWidth / 2.0;
-    const auto top = marker.y - kMarkerGap - kLabelHeight;
+    const auto left = marker.x - layout::kMorphNameLabelWidth / 2.0;
+    const auto top = marker.y - layout::kMorphNameLabelGap -
+                     layout::kMorphNameLabelHeight;
     const auto label_rect =
-        CRect(left, top, left + kLabelWidth, top + kLabelHeight);
+        CRect(left, top, left + layout::kMorphNameLabelWidth,
+              top + layout::kMorphNameLabelHeight);
     const auto text = VSTGUI::CDrawMethods::createTruncatedText(
         VSTGUI::CDrawMethods::kTextTruncateTail, UTF8String(name), name_font_,
-        kLabelWidth);
+        layout::kMorphNameLabelWidth);
     context->setFont(name_font_);
-    context->setFontColor(CColor(0xc1, 0xbe, 0xb8, 0xa0));
+    context->setFontColor(theme::kTextMutedAlpha);
     context->drawString(text.getPlatformString(), label_rect,
                         CHoriTxtAlign::kCenterText, true);
   }
@@ -507,7 +510,6 @@ class MorphPadView final : public CControl {
   CFontRef name_font_;
   int voice_count_ = 0;
   int drag_target_ = kNoDragTarget;
-  bool show_auxiliary_labels_ = false;
   VoiceMorphState state_;
   VoiceMorphState state_before_edit_;
   std::vector<SharedPointer<CBitmap>> voice_bitmaps_;
@@ -536,60 +538,9 @@ class MorphFalloffSlider final : public Slider {
     invalid();
   }
 
-  void SetAuxiliaryLabelStateChangedCallback(std::function<void(bool)> cb) {
-    auxiliary_label_state_changed_callback_ = std::move(cb);
-  }
-
-  auto onMouseDown(CPoint& where, const CButtonState& buttons)
-      -> CMouseEventResult override {
-    if (!buttons.isLeftButton()) {
-      return Slider::onMouseDown(where, buttons);
-    }
-    dragging_ = true;
-    NotifyAuxiliaryLabelStateChanged();
-    return Slider::onMouseDown(where, buttons);
-  }
-
-  auto onMouseUp(CPoint& where, const CButtonState& buttons)
-      -> CMouseEventResult override {
-    const auto result = Slider::onMouseUp(where, buttons);
-    dragging_ = false;
-    NotifyAuxiliaryLabelStateChanged();
-    return result;
-  }
-
-  auto onMouseCancel() -> CMouseEventResult override {
-    const auto result = Slider::onMouseCancel();
-    dragging_ = false;
-    NotifyAuxiliaryLabelStateChanged();
-    return result;
-  }
-
-  void takeFocus() override {
-    Slider::takeFocus();
-    focused_ = true;
-    NotifyAuxiliaryLabelStateChanged();
-  }
-
-  void looseFocus() override {
-    Slider::looseFocus();
-    focused_ = false;
-    NotifyAuxiliaryLabelStateChanged();
-  }
-
  protected:
   [[nodiscard]] auto GetTrackYOffset() const -> CCoord override { return 27.0; }
 
- private:
-  void NotifyAuxiliaryLabelStateChanged() {
-    if (auxiliary_label_state_changed_callback_) {
-      auxiliary_label_state_changed_callback_(dragging_ || focused_);
-    }
-  }
-
-  bool dragging_ = false;
-  bool focused_ = false;
-  std::function<void(bool)> auxiliary_label_state_changed_callback_;
 };
 
 }  // namespace beatrice::vst

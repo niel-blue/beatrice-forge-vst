@@ -18,12 +18,19 @@
 
 namespace beatrice::common {
 
+// Fork-only VST parameter namespaces. Keep post-conversion effects separate
+// from preset/UI/input-cleanup storage so future upstream parameters can be
+// incorporated without moving the effect controls again.
+inline constexpr auto kForkParameterBase = 1000;
+inline constexpr auto kOutputEffectsParameterBase = 1100;
+inline constexpr auto kOutputEffectsParameterEnd = 1200;
+
 class ProcessorProxy;
 class ControllerCore;
 
 // VST と互換性のあるフラグ
 namespace parameter_flag {
-enum : std::uint8_t {
+enum : std::uint32_t {
   kNoFlags = 0,
   // オートメーション可能
   kCanAutomate = 1 << 0,
@@ -37,13 +44,13 @@ enum : std::uint8_t {
   kIsHidden = 1 << 4,
 
   // バイパスは一旦使わない
-  // kIsBypass = 1 << 16
+  kIsBypass = 1u << 16,
 };
 }  // namespace parameter_flag
 
 enum class ParameterID : std::int16_t {
   kNull = -1,
-  // kByPass = 0,
+  kBypass = 0,
   kModel = 1,
   kVoice = 2,
   kFormantShift = 3,
@@ -65,8 +72,23 @@ enum class ParameterID : std::int16_t {
   kVoiceMorphMarkerVoiceBase = 19,
   kVoiceMorphMarkerXBase = kVoiceMorphMarkerVoiceBase + kMaxNVoiceMorphMarkers,
   kVoiceMorphMarkerYBase = kVoiceMorphMarkerXBase + kMaxNVoiceMorphMarkers,
+  // Keep the upstream parameter namespace intact. Latency Reporting is 43 in
+  // the upstream rc.3 schema; fork-only parameters live in the 1000 range.
+  kLatencyReporting = 43,
   kAverageTargetPitchBase = 100,
   kEnd = kAverageTargetPitchBase + kMaxNSpeakers + 1,
+  kSimpleMorphWeights = kForkParameterBase,
+  kPresetData = 1001,
+  kLowCutHz = 1002,
+  kLightDenoise = 1003,
+  kCompensatedDrive = 1004,
+  kDeClick = 1005,
+  // Shared post-conversion effects.
+  kDeMud = kOutputEffectsParameterBase,
+  kPresence = kOutputEffectsParameterBase + 1,
+  kReverbMix = kOutputEffectsParameterBase + 10,
+  kReverbDecay = kOutputEffectsParameterBase + 11,
+  kReverbTone = kOutputEffectsParameterBase + 12,
 };
 
 inline auto IsVoiceMorphParameter(const ParameterID param_id) -> bool {
@@ -75,6 +97,20 @@ inline auto IsVoiceMorphParameter(const ParameterID param_id) -> bool {
                        kMaxNVoiceMorphMarkers;
   return id >= static_cast<int>(ParameterID::kVoiceMorphCursorX) &&
          id < last_id;
+}
+
+// Input Cleanup is shared by every preset and model. The values remain normal
+// plug-in parameters so the host can save and automate them, but they are not
+// part of the per-preset data.
+inline auto IsInputCleanupParameter(const ParameterID param_id) -> bool {
+  switch (param_id) {
+    case ParameterID::kLowCutHz:
+    case ParameterID::kLightDenoise:
+    case ParameterID::kDeClick:
+      return true;
+    default:
+      return false;
+  }
 }
 
 class NumberParameter {
@@ -242,6 +278,11 @@ class ParameterSchema {
   [[nodiscard]] auto GetParameter(const ParameterID param_id) const
       -> const ParameterVariant& {
     return parameters_.at(param_id);
+  }
+  [[nodiscard]] auto FindParameter(const ParameterID param_id) const
+      -> const ParameterVariant* {
+    const auto itr = parameters_.find(param_id);
+    return itr == parameters_.end() ? nullptr : &itr->second;
   }
   // NOLINTBEGIN(readability-identifier-naming)
   [[nodiscard]] auto begin() const { return parameters_.begin(); }
