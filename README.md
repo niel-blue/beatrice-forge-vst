@@ -1,4 +1,4 @@
-# Beatrice Forge
+# Beatrice Forge VST
 
 <img width="962" height="721" alt="スクリーンショット 2026-08-22 025501" src="https://github.com/user-attachments/assets/b8533872-587d-47a8-b721-ce1927f2f685" />
 
