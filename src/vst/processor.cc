@@ -5,10 +5,18 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <ios>
 #include <memory>
 #include <mutex>  // NOLINT(build/c++11)
+#include <sstream>
 #include <string>
+#include <variant>
 
+#include "vst3sdk/pluginterfaces/base/fplatform.h"
+#include "vst3sdk/pluginterfaces/base/fstrdefs.h"
+#include "vst3sdk/pluginterfaces/base/ftypes.h"
+#include "vst3sdk/pluginterfaces/base/funknown.h"
+#include "vst3sdk/pluginterfaces/vst/ivstaudioprocessor.h"
 #include "vst3sdk/pluginterfaces/vst/ivstparameterchanges.h"
 #include "vst3sdk/pluginterfaces/vst/vstspeaker.h"
 #include "vst3sdk/pluginterfaces/base/smartpointer.h"
@@ -90,7 +98,7 @@ auto PLUGIN_API Processor::setBusArrangements(SpeakerArrangement* const inputs,
 // setup.processMode         kRealtime or kPrefetch or kOffline
 // setup.symbolicSampleSize  kSample32 or kSample64
 auto PLUGIN_API Processor::setupProcessing(ProcessSetup& setup) -> tresult {
-  std::lock_guard<std::mutex> lock(mtx_);
+  const std::scoped_lock lock(mtx_);
   if (setup.symbolicSampleSize == Steinberg::Vst::kSample64) {
     return kResultFalse;
   }
@@ -141,6 +149,17 @@ auto PLUGIN_API Processor::getLatencySamples() -> uint32 {
 
 // TODO(bug): tail を設定する
 
+auto PLUGIN_API Processor::getLatencySamples() -> uint32 {
+  const std::scoped_lock lock(mtx_);
+  const auto latency_reporting =
+      std::get<int>(vc_core_.GetParameterState().GetValue(
+          common::ParameterID::kLatencyReporting));
+  if (latency_reporting == 0) {
+    return 0;
+  }
+  return static_cast<uint32>(vc_core_.GetCore()->GetLatencySamples());
+}
+
 // メイン処理
 auto PLUGIN_API Processor::process(ProcessData& data) -> tresult {
   // パラメータの変更があった場合
@@ -168,7 +187,7 @@ auto PLUGIN_API Processor::process(ProcessData& data) -> tresult {
     }
   }
 
-  std::unique_lock<std::mutex> lock(mtx_, std::try_to_lock);
+  const std::unique_lock<std::mutex> lock(mtx_, std::try_to_lock);
   // ファイルの読み込み中はパラメータ変更の処理を先送りにし、
   // 無音を出力する
   if (!lock.owns_lock()) {

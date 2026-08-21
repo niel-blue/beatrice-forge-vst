@@ -32,6 +32,7 @@ class Controller : public Steinberg::Vst::EditController {
   using EditorView = Steinberg::Vst::EditorView;
   using ParamID = Steinberg::Vst::ParamID;
   using ParamValue = Steinberg::Vst::ParamValue;
+  using IMessage = Steinberg::Vst::IMessage;
 
  public:
   using ParameterSink = std::function<common::ErrorCode(

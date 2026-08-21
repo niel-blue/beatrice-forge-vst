@@ -166,6 +166,7 @@ class ProcessorCoreUnloaded : public ProcessorCoreBase {
  public:
   using ProcessorCoreBase::ProcessorCoreBase;
   [[nodiscard]] auto GetVersion() const -> int override { return -1; }
+  [[nodiscard]] auto GetLatencySamples() const -> int override { return 0; }
   auto Process(const float* const /*input*/, float* const output,
                const int n_samples,
                float* const output_right = nullptr,

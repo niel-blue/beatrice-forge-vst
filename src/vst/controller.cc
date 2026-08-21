@@ -14,6 +14,7 @@
 
 #include "vst3sdk/pluginterfaces/base/fplatform.h"
 #include "vst3sdk/pluginterfaces/base/funknown.h"
+#include "vst3sdk/pluginterfaces/vst/ivsteditcontroller.h"
 #include "vst3sdk/pluginterfaces/vst/ivstunits.h"
 #include "vst3sdk/pluginterfaces/vst/ivsteditcontroller.h"
 #include "vst3sdk/public.sdk/source/vst/utility/stringconvert.h"
@@ -23,6 +24,7 @@
 // Beatrice
 #include "common/parameter_schema.h"
 #include "common/parameter_state.h"
+#include "vst/editor.h"
 #include "vst/parameter.h"
 #include "vst/plugin_state.h"
 
@@ -438,6 +440,17 @@ void Controller::GetRecordingStatus(common::RecordingStatus& status) const {
       recording_dropped_frames_.load(std::memory_order_relaxed);
   std::lock_guard<std::mutex> lock(recording_mutex_);
   status.error = recording_error_;
+}
+
+auto PLUGIN_API Controller::notify(IMessage* const message) -> tresult {
+  if (std::strcmp(message->getMessageID(), "latency_changed") == 0) {
+    if (componentHandler) {
+      return componentHandler->restartComponent(
+          Steinberg::Vst::kLatencyChanged);
+    }
+    return kResultTrue;
+  }
+  return EditController::notify(message);
 }
 
 }  // namespace beatrice::vst
