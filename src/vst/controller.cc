@@ -442,15 +442,4 @@ void Controller::GetRecordingStatus(common::RecordingStatus& status) const {
   status.error = recording_error_;
 }
 
-auto PLUGIN_API Controller::notify(IMessage* const message) -> tresult {
-  if (std::strcmp(message->getMessageID(), "latency_changed") == 0) {
-    if (componentHandler) {
-      return componentHandler->restartComponent(
-          Steinberg::Vst::kLatencyChanged);
-    }
-    return kResultTrue;
-  }
-  return EditController::notify(message);
-}
-
 }  // namespace beatrice::vst

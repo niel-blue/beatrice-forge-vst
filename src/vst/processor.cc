@@ -147,19 +147,6 @@ auto PLUGIN_API Processor::getLatencySamples() -> uint32 {
   return static_cast<uint32>(audio_engine_.GetLatencySamples());
 }
 
-// TODO(bug): tail を設定する
-
-auto PLUGIN_API Processor::getLatencySamples() -> uint32 {
-  const std::scoped_lock lock(mtx_);
-  const auto latency_reporting =
-      std::get<int>(vc_core_.GetParameterState().GetValue(
-          common::ParameterID::kLatencyReporting));
-  if (latency_reporting == 0) {
-    return 0;
-  }
-  return static_cast<uint32>(vc_core_.GetCore()->GetLatencySamples());
-}
-
 // メイン処理
 auto PLUGIN_API Processor::process(ProcessData& data) -> tresult {
   // パラメータの変更があった場合
