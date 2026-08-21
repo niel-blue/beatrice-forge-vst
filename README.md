@@ -1,6 +1,7 @@
-![Uploading logo_forge.png…]()
-
 # Beatrice Forge
+
+<img width="962" height="721" alt="スクリーンショット 2026-08-22 025501" src="https://github.com/user-attachments/assets/b8533872-587d-47a8-b721-ce1927f2f685" />
+
 
 Beatrice Forge は、Project Beatrice の音声変換 VST3 プラグインを基にした、Windows 向けの改修版です。
 
