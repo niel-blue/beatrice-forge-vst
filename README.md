@@ -1,3 +1,5 @@
+![Uploading logo_forge.png…]()
+
 # Beatrice Forge
 
 Beatrice Forge は、Project Beatrice の音声変換 VST3 プラグインを基にした、Windows 向けの改修版です。
@@ -21,6 +23,7 @@ Beatrice Forge は、Project Beatrice の音声変換 VST3 プラグインを基
 - **EFFECTS** — De-Mud でこもりを抑え、Presence で明瞭さを加えます。Reverb では残響の量、長さ、音色を調整できます。
 - **入力・変換後の音量インジケーター** — 入力音と変換後の音が入っているか、音量がどの程度かを画面上で確認できます。
 - **レガシースタイルのモーフ画面** — 従来の操作感を残したモーフ画面で、話者名とウェイト値を確認しながら調整できます。
+
 
 ### プリセット
 
