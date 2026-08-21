@@ -12,6 +12,8 @@
 #include <utility>
 
 #include "vst3sdk/vstgui4/vstgui/lib/cdrawdefs.h"
+#include "vst3sdk/vstgui4/vstgui/lib/controls/cscrollbar.h"
+#include "vst3sdk/vstgui4/vstgui/lib/cscrollview.h"
 #include "vst3sdk/vstgui4/vstgui/lib/cview.h"
 #include "vst3sdk/vstgui4/vstgui/lib/cvstguitimer.h"
 #include "vst3sdk/vstgui4/vstgui/lib/vstguibase.h"
@@ -27,6 +29,63 @@ namespace beatrice::vst {
 using VSTGUI::CView;
 using VSTGUI::kDrawFilled;
 using VSTGUI::kDrawStroked;
+
+// A shared page-level vertical scroll surface.  The scrollbar is an overlay
+// and is only enabled when the content exceeds the viewport, so adding future
+// controls does not change the current column widths or reserve a permanent
+// gutter in the design.
+class VerticalScrollView final : public VSTGUI::CScrollView {
+ public:
+  VerticalScrollView(const VSTGUI::CRect& viewport,
+                     const VSTGUI::CRect& content)
+      : CScrollView(
+            viewport, content,
+            CScrollView::kVerticalScrollbar |
+                CScrollView::kDontDrawFrame |
+                CScrollView::kOverlayScrollbars |
+                CScrollView::kAutoHideScrollbars,
+            layout::kVerticalScrollbarWidth) {
+    setBackgroundColor(VSTGUI::kTransparentCColor);
+    setTransparency(true);
+    UpdateScrollbar();
+  }
+
+  void setContainerSize(
+      const VSTGUI::CRect& size,
+      const bool keep_visible_area = false) override {
+    CScrollView::setContainerSize(size, keep_visible_area);
+    UpdateScrollbar();
+  }
+
+  void setViewSize(const VSTGUI::CRect& rect,
+                   const bool invalid = true) override {
+    CScrollView::setViewSize(rect, invalid);
+    UpdateScrollbar();
+  }
+
+  bool attached(VSTGUI::CView* const parent) override {
+    const auto result = CScrollView::attached(parent);
+    UpdateScrollbar();
+    return result;
+  }
+
+ private:
+  void UpdateScrollbar() {
+    auto* const scrollbar = getVerticalScrollbar();
+    if (!scrollbar) {
+      return;
+    }
+    scrollbar->setBackgroundColor(theme::kScrollbarBackground);
+    scrollbar->setFrameColor(theme::kScrollbarFrame);
+    scrollbar->setScrollerColor(theme::kScrollbarThumb);
+    scrollbar->setMinScrollerLength(18.0);
+    const auto needed = getContainerSize().getHeight() >
+                        getVisibleClientRect().getHeight() + 0.5;
+    scrollbar->setVisible(needed);
+    scrollbar->setMouseEnabled(needed);
+    scrollbar->setDirty();
+  }
+};
 
 class TabAccentView final : public CView {
  public:
@@ -124,6 +183,11 @@ enum class ActionIcon {
   kDown,
   kSave,
   kPower,
+  kPlay,
+  kPause,
+  kStop,
+  kLoop,
+  kRecord,
 };
 
 class GlowingActionLabel final : public ActionLabel {
@@ -140,6 +204,9 @@ class GlowingActionLabel final : public ActionLabel {
     if (regular_font_ && bold_font_) {
       setFont(active_ ? bold_font_ : regular_font_);
     }
+    if (state_text_colors_configured_) {
+      setFontColor(active_ ? active_text_color_ : inactive_text_color_);
+    }
     invalid();
   }
 
@@ -147,15 +214,38 @@ class GlowingActionLabel final : public ActionLabel {
 
   void SetInactiveColor(const CColor& color) { inactive_color_ = color; }
 
+  // Action buttons can opt into the shared warm outline without changing the
+  // appearance of tabs, preset rows or other labels that use this view.
+  void SetOutlined(const bool outlined, const CCoord radius = 3.0) {
+    outlined_ = outlined;
+    outline_radius_ = radius;
+    invalid();
+  }
+
   void SetStateFonts(CFontRef regular_font, CFontRef bold_font) {
     regular_font_ = regular_font;
     bold_font_ = bold_font;
     setFont(active_ ? bold_font_ : regular_font_);
   }
 
+  void SetStateTextColors(const CColor& active, const CColor& inactive) {
+    active_text_color_ = active;
+    inactive_text_color_ = inactive;
+    state_text_colors_configured_ = true;
+    setFontColor(active_ ? active_text_color_ : inactive_text_color_);
+  }
+
   void SetIcon(const ActionIcon icon) {
     icon_ = icon;
     setTextInset(CPoint{});
+    invalid();
+  }
+
+  // Compact action buttons such as the standalone REC/STOP control can keep
+  // their icon inside a narrow 80px button without changing the shared gap
+  // used by preset-management actions.
+  void SetIconTextGap(const CCoord gap) {
+    icon_text_gap_ = std::max(0.0, gap);
     invalid();
   }
 
@@ -274,6 +364,18 @@ class GlowingActionLabel final : public ActionLabel {
       context->drawString(text, rect, CHoriTxtAlign::kCenterText, true);
     }
     DrawIcon(context, rect);
+    if (outlined_) {
+      const auto path = VSTGUI::owned(context->createGraphicsPath());
+      if (path) {
+        auto frame_rect = rect;
+        frame_rect.inset(0.5, 0.5);
+        path->addRoundRect(frame_rect, outline_radius_);
+        context->setLineStyle(kLineSolid);
+        context->setLineWidth(1.0);
+        context->setFrameColor(theme::kActionOutline);
+        context->drawGraphicsPath(path, CDrawContext::kPathStroked);
+      }
+    }
     context->restoreGlobalState();
     setDirty(false);
   }
@@ -297,8 +399,8 @@ class GlowingActionLabel final : public ActionLabel {
                        : rect.getCenter().x -
                              context->getStringWidth(
                                  getText().getPlatformString()) /
-                                 2.0 -
-                             layout::kIconTextGap - kIconHalfWidth;
+                             2.0 -
+                             icon_text_gap_ - kIconHalfWidth;
     const auto y = rect.top + rect.getHeight() / 2.0 -
                    (icon_ == ActionIcon::kPower ? 1.0 : 0.0);
     context->setFrameColor(getFontColor());
@@ -339,10 +441,37 @@ class GlowingActionLabel final : public ActionLabel {
       line(x - 6, y + 4, x - 6, y + 7);
       line(x - 6, y + 7, x + 6, y + 7);
       line(x + 6, y + 7, x + 6, y + 4);
+    } else if (icon_ == ActionIcon::kPlay) {
+      const auto points = CDrawContext::PointList{
+          CPoint(x - 4.0, y - 6.0), CPoint(x + 5.0, y),
+          CPoint(x - 4.0, y + 6.0)};
+      context->drawPolygon(points, kDrawFilled);
+    } else if (icon_ == ActionIcon::kPause) {
+      context->drawRect(CRect(x - 5.0, y - 6.0, x - 1.0, y + 6.0),
+                        kDrawFilled);
+      context->drawRect(CRect(x + 1.0, y - 6.0, x + 5.0, y + 6.0),
+                        kDrawFilled);
+    } else if (icon_ == ActionIcon::kStop) {
+      context->drawRect(CRect(x - 5.0, y - 5.0, x + 5.0, y + 5.0),
+                        kDrawFilled);
+    } else if (icon_ == ActionIcon::kLoop) {
+      // Keep the repeat glyph legible at the compact 20 px transport-button
+      // size.  A complete ring plus two arrowheads is more reliable across
+      // VSTGUI backends than two partially overlapping arcs.
+      context->drawEllipse(CRect(x - 6.0, y - 5.0, x + 6.0, y + 5.0),
+                           kDrawStroked);
+      line(x + 2.0, y - 5.0, x + 7.0, y - 5.0);
+      line(x + 7.0, y - 5.0, x + 5.0, y - 3.0);
+      line(x - 2.0, y + 5.0, x - 7.0, y + 5.0);
+      line(x - 7.0, y + 5.0, x - 5.0, y + 3.0);
+    } else if (icon_ == ActionIcon::kRecord) {
+      context->drawEllipse(CRect(x - 5.0, y - 5.0, x + 5.0, y + 5.0),
+                           kDrawFilled);
     }
   }
 
   ActionIcon icon_ = ActionIcon::kNone;
+  CCoord icon_text_gap_ = layout::kIconTextGap;
   std::function<void()> action_;
   std::function<void()> right_click_action_;
   std::function<void(CCoord)> drag_finished_action_;
@@ -351,8 +480,13 @@ class GlowingActionLabel final : public ActionLabel {
   bool drag_candidate_ = false;
   bool dragging_ = false;
   bool active_ = false;
+  bool state_text_colors_configured_ = false;
+  CColor active_text_color_;
+  CColor inactive_text_color_;
   CColor active_color_ = theme::kSelected;
   CColor inactive_color_ = theme::kDropdown;
+  bool outlined_ = false;
+  CCoord outline_radius_ = 3.0;
   bool flash_ = false;
   CFontRef regular_font_ = nullptr;
   CFontRef bold_font_ = nullptr;

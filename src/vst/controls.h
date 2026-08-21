@@ -19,19 +19,24 @@
 #include "vst3sdk/vstgui4/vstgui/lib/ccolor.h"
 #include "vst3sdk/vstgui4/vstgui/lib/cdrawcontext.h"
 #include "vst3sdk/vstgui4/vstgui/lib/cdrawdefs.h"
+#include "vst3sdk/vstgui4/vstgui/lib/cdrawmethods.h"
 #include "vst3sdk/vstgui4/vstgui/lib/cfileselector.h"
 #include "vst3sdk/vstgui4/vstgui/lib/cframe.h"
 #include "vst3sdk/vstgui4/vstgui/lib/cfont.h"
 #include "vst3sdk/vstgui4/vstgui/lib/cgraphicspath.h"
 #include "vst3sdk/vstgui4/vstgui/lib/clinestyle.h"
+#include "vst3sdk/vstgui4/vstgui/lib/controls/coptionmenu.h"
+#include "vst3sdk/vstgui4/vstgui/lib/controls/cscrollbar.h"
 #include "vst3sdk/vstgui4/vstgui/lib/controls/cparamdisplay.h"
 #include "vst3sdk/vstgui4/vstgui/lib/controls/cslider.h"
+#include "vst3sdk/vstgui4/vstgui/lib/cscrollview.h"
 #include "vst3sdk/vstgui4/vstgui/lib/controls/ctextlabel.h"
 #include "vst3sdk/vstgui4/vstgui/lib/cpoint.h"
 #include "vst3sdk/vstgui4/vstgui/lib/cstring.h"
 #include "vst3sdk/vstgui4/vstgui/lib/events.h"
 #include "vst3sdk/vstgui4/vstgui/lib/vstguibase.h"
 #include "vst3sdk/vstgui4/vstgui/lib/vstguifwd.h"
+#include "vst/editor_layout.h"
 #include "vst/editor_theme.h"
 
 namespace beatrice::vst {
@@ -50,6 +55,7 @@ using VSTGUI::CHorizontalSlider;
 using VSTGUI::CMessageResult;
 using VSTGUI::CMouseEventResult;
 using VSTGUI::CNewFileSelector;
+using VSTGUI::COptionMenu;
 using VSTGUI::CParamDisplay;
 using VSTGUI::CPoint;
 using VSTGUI::CRect;
@@ -65,6 +71,35 @@ using VSTGUI::kMessageNotified;
 using VSTGUI::kTransparentCColor;
 using VSTGUI::SharedPointer;
 using VSTGUI::UTF8String;
+
+// COptionMenu clips an overlong current entry at the view boundary. All
+// Beatrice menus reserve the passive chevron at the right edge and use the
+// same tail-truncation rule so device and model names remain readable while
+// the full titles are retained in the popup entries.
+class TruncatingOptionMenu : public COptionMenu {
+ public:
+  TruncatingOptionMenu(const CRect& size, IControlListener* listener,
+                       const int32_t tag, CBitmap* background = nullptr)
+      : COptionMenu(size, listener, tag, background) {
+    setHoriAlign(CHoriTxtAlign::kLeftText);
+    setTextInset(CPoint(layout::kDropdownTextInset, 0.0));
+  }
+
+  void draw(CDrawContext* const context) override {
+    const auto* const item = getCurrent();
+    drawBack(context);
+    if (item != nullptr) {
+      const auto available_width = std::max(
+          0.0, getViewSize().getWidth() - layout::kDropdownChevronInset -
+                   layout::kDropdownChevronWidth);
+      const auto display_text = VSTGUI::CDrawMethods::createTruncatedText(
+          VSTGUI::CDrawMethods::kTextTruncateTail, item->getTitle(),
+          getFont(), available_width, getTextInset());
+      drawPlatformText(context, display_text);
+    }
+    setDirty(false);
+  }
+};
 
 class ChevronView final : public CView {
  public:
@@ -269,10 +304,11 @@ class Slider : public CHorizontalSlider {
   }
 
   void onMouseWheelEvent(VSTGUI::MouseWheelEvent& event) override {
-    // VSTGUI dispatches this event only to the view beneath the cursor. The
-    // wheel therefore follows the pointer position, while focused_ remains
-    // reserved for keyboard navigation and the focus-state styling.
+    // The wheel belongs to the nearest vertical page scroll surface.  A
+    // slider must not steal it merely because the pointer happens to be over
+    // a horizontal control; drag and keyboard editing remain available.
     if (!wheel_editing_enabled_) {
+      ForwardWheelToScrollableAncestor(event);
       return;
     }
     // A normal mouse reports deltaY even when the control itself is a
@@ -313,6 +349,34 @@ class Slider : public CHorizontalSlider {
     event.consumed = true;
   }
 
+ private:
+  void ForwardWheelToScrollableAncestor(VSTGUI::MouseWheelEvent& event) {
+    for (auto* parent = getParentView(); parent != nullptr;
+         parent = parent->getParentView()) {
+      auto* const scroll = dynamic_cast<VSTGUI::CScrollView*>(parent);
+      if (!scroll) {
+        continue;
+      }
+      if (event.deltaY != 0.0) {
+        if (auto* const scrollbar = scroll->getVerticalScrollbar()) {
+          scrollbar->onMouseWheelEvent(event);
+          if (event.consumed) {
+            return;
+          }
+        }
+      }
+      if (event.deltaX != 0.0) {
+        if (auto* const scrollbar = scroll->getHorizontalScrollbar()) {
+          scrollbar->onMouseWheelEvent(event);
+          if (event.consumed) {
+            return;
+          }
+        }
+      }
+    }
+  }
+
+ public:
   // CSliderBase::onKeyboardEvent がベース
   void onKeyboardEvent(VSTGUI::KeyboardEvent& event) override {
     using VSTGUI::VirtualKey;

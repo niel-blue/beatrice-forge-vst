@@ -34,8 +34,9 @@ inline auto MakeSmallFont(const bool bold = false) -> VSTGUI::CFontDesc* {
                                bold ? VSTGUI::kBoldFace : 0);
 }
 
-inline auto MakeTabFont() -> VSTGUI::CFontDesc* {
-  return new VSTGUI::CFontDesc(kUiFontFamily, kTabFontSize);
+inline auto MakeTabFont(const bool bold = false) -> VSTGUI::CFontDesc* {
+  return new VSTGUI::CFontDesc(kUiFontFamily, kTabFontSize,
+                               bold ? VSTGUI::kBoldFace : 0);
 }
 
 inline auto MakeHeadingFont() -> VSTGUI::CFontDesc* {

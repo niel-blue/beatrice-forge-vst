@@ -1,0 +1,11 @@
+* text=auto
+
+# Shared source and its local synchronization tools must use stable LF text.
+src/common/** text eol=lf
+src/ui/** text eol=lf
+src/vst/** text eol=lf
+resource/logo.png binary
+resource/logo_forge.png binary
+resource/icon.ico binary
+tools/** text eol=lf
+docs/** text eol=lf

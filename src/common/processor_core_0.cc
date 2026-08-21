@@ -21,7 +21,8 @@ auto ProcessorCore0::GetLatencySamples() const -> int {
 }
 auto ProcessorCore0::ProcessWithoutConversion(const float* const input,
                                                float* const output,
-                                               const int n_samples)
+                                               const int n_samples,
+                                               float* const pre_conversion)
     -> ErrorCode {
   if (!bypass_input_gain_context_.IsReady()) {
     std::memset(output, 0, sizeof(float) * n_samples);
@@ -33,12 +34,16 @@ auto ProcessorCore0::ProcessWithoutConversion(const float* const input,
   }
   bypass_input_cleanup_.Process(input, output, n_samples);
   gain_.Process(output, output, n_samples, bypass_input_gain_context_);
+  if (pre_conversion != nullptr) {
+    std::memcpy(pre_conversion, output, sizeof(float) * n_samples);
+  }
   gain_.Process(output, output, n_samples, bypass_output_gain_context_);
   return ErrorCode::kSuccess;
 }
 auto ProcessorCore0::Process(const float* const input, float* const output,
                              const int n_samples,
-                             float* const output_right) -> ErrorCode {
+                             float* const output_right,
+                             float* const pre_conversion) -> ErrorCode {
   const auto fill_zero = [output, output_right, n_samples] {
     std::memset(output, 0, sizeof(float) * n_samples);
     if (output_right != nullptr) {
@@ -70,6 +75,9 @@ auto ProcessorCore0::Process(const float* const input, float* const output,
          9 * BEATRICE_WAVEFORM_GENERATOR_HIDDEN_CHANNELS);
   input_cleanup_.Process(input, output, n_samples);
   gain_.Process(output, output, n_samples, input_gain_context_);
+  if (pre_conversion != nullptr) {
+    std::memcpy(pre_conversion, output, sizeof(float) * n_samples);
+  }
   any_freq_in_out_(output, output, n_samples, *this);
   ProcessOutputEffects(output, output_right, n_samples);
   auto right_gain_context = output_gain_context_;

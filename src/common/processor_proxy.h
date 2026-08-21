@@ -36,7 +36,8 @@ class ProcessorProxy {
     sample_rate_ = new_sample_rate;
     return core_->SetSampleRate(sample_rate_);
   }
-  [[nodiscard]] auto GetParameter(ParameterID param_id) const -> const auto&;
+  [[nodiscard]] auto GetParameter(ParameterID param_id) const
+      -> const ParameterState::Value&;
   template <typename T>
   auto SetParameter(const ParameterID param_id, const T& value) -> ErrorCode {
     parameter_state_.SetValue(param_id, value);

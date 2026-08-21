@@ -3,8 +3,12 @@
 #ifndef BEATRICE_VST_PROCESSOR_H_
 #define BEATRICE_VST_PROCESSOR_H_
 
+#include <cstdint>
+#include <filesystem>
 #include <map>
 #include <mutex>  // NOLINT(build/c++11)
+#include <optional>
+#include <string>
 #include <vector>
 
 #include "vst3sdk/pluginterfaces/base/ibstream.h"
@@ -13,7 +17,9 @@
 #include "vst3sdk/public.sdk/source/vst/vstaudioeffect.h"
 
 // Beatrice
-#include "common/processor_proxy.h"
+#include "common/audio_engine.h"
+#include "common/audio_recorder.h"
+#include "vst/direct_wasapi_output.h"
 
 namespace beatrice::vst {
 
@@ -33,6 +39,7 @@ class Processor : public Steinberg::Vst::AudioEffect {
 
  public:
   Processor();
+  ~Processor() override;
 
   auto PLUGIN_API initialize(FUnknown* context) -> tresult SMTG_OVERRIDE;
   auto PLUGIN_API setBusArrangements(SpeakerArrangement* inputs, int32 numIns,
@@ -55,14 +62,25 @@ class Processor : public Steinberg::Vst::AudioEffect {
   }
 
  private:
+  void SendAudioLevelMessage();
+  void SendRecordingStatusMessage();
+  void SendDirectWasapiStatusMessage(DirectWasapiStatus status,
+                                     const std::string& error);
+
   std::mutex mtx_;
-  common::ProcessorProxy vc_core_;
+  common::AudioEngine audio_engine_;
+  common::AudioRecorder recorder_;
+  DirectWasapiOutput direct_wasapi_output_;
+  std::optional<DirectWasapiConfig> direct_wasapi_config_;
+  common::RecordingMode recording_mode_ = common::RecordingMode::kOff;
+  std::filesystem::path recording_path_;
   // メモリ確保が挟まるのが望ましくないが……
   std::map<ParamID, ParamValue> unreflected_params_;
-  std::vector<float> dry_buffer_;
-  std::vector<float> bypass_buffer_;
-  float bypass_mix_ = 0.0F;
-  float bypass_mix_step_ = 1.0F;
+  double meter_sample_rate_ = 0.0;
+  std::int64_t meter_frames_ = 0;
+  float meter_input_peak_ = 0.0F;
+  float meter_output_peak_ = 0.0F;
+  std::vector<float> input_meter_buffer_;
 };
 
 }  // namespace beatrice::vst

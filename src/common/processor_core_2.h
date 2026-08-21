@@ -67,9 +67,12 @@ class ProcessorCore2 : public ProcessorCoreBase {
   [[nodiscard]] auto GetVersion() const -> int override;
   [[nodiscard]] auto GetLatencySamples() const -> int override;
   auto ProcessWithoutConversion(const float* input, float* output,
-                                int n_samples) -> ErrorCode override;
+                                int n_samples,
+                                float* pre_conversion = nullptr)
+      -> ErrorCode override;
   auto Process(const float* input, float* output, int n_samples,
-               float* output_right = nullptr) -> ErrorCode override;
+               float* output_right = nullptr,
+               float* pre_conversion = nullptr) -> ErrorCode override;
   auto ProcessOutputEffectsTail(float* output, float* output_right,
                                 int n_samples) -> ErrorCode override;
   auto ResetContext() -> ErrorCode override;

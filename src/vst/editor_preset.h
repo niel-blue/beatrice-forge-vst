@@ -223,33 +223,29 @@ class PresetPanel final : public SurfacePanel, public IControlListener {
         import_presets_(std::move(import_presets)),
         export_presets_(std::move(export_presets)),
         focus_column_(std::move(focus_column)) {
-    // Stop four pixels before the add button. With 90 px tabs this leaves a
-    // sliver of the next tab visible when three or more banks exist.
+    // The bank row and its add/delete actions use the fixed 28px bank-tab
+    // rule. The scroll view reserves its 6px bar below that row.
     bank_tabs_ = new PresetTabScrollView(
         CRect(layout::kCompactContentInset, layout::kPresetTabsTop,
               layout::kPresetTabsRight, layout::kPresetTabsBottom),
         CRect(0, 0,
               layout::kPresetTabsRight - layout::kCompactContentInset,
-              layout::kSwitchHeight));
+              layout::kPresetTabContainerHeight));
     ApplyScrollbarTheme(bank_tabs_);
     bank_tabs_->setBackgroundColor(kTransparentCColor);
     bank_tabs_->setTransparency(true);
     // The extra six pixels are reserved internally by CScrollView for its
-    // horizontal bar. Keep that empty strip out of hit-testing so the preset
-    // list can begin at y=82.5 without input overlap.
+    // horizontal bar. Keep that strip out of hit-testing so the preset list
+    // remains independent of tab selection.
     bank_tabs_->setMouseableArea(layout::PresetTabHitRect());
     addView(bank_tabs_);
-    addView(MakeAction(CRect(layout::kPresetAddLeft,
-                             layout::kPresetTabActionTop,
-                             layout::kPresetAddRight,
-                             layout::kPresetTabActionBottom), "", [this]() {
+    addView(MakeAction(layout::PresetBankAddButtonRect(), "", [this]() {
       if (add_bank_) {
         add_bank_();
       }
     }, ActionIcon::kPlus, true, ui::ControlHelpID::kPresetBankAdd));
     delete_bank_button_ = MakeAction(
-        CRect(layout::kPresetDeleteLeft, layout::kPresetTabActionTop,
-              layout::kCompactRight, layout::kPresetTabActionBottom), "", [this]() {
+        layout::PresetBankDeleteButtonRect(), "", [this]() {
           if (banks_.size() <= 1 || selected_bank_ < 0) return;
           if (delete_armed_bank_ != selected_bank_) {
             delete_armed_bank_ = selected_bank_;
@@ -263,8 +259,8 @@ class PresetPanel final : public SurfacePanel, public IControlListener {
         }, ActionIcon::kTrash, true, ui::ControlHelpID::kPresetBankDelete);
     addView(delete_bank_button_);
 
-    // The visible tab row ends at y=72. Keep only half of the previous 9 px
-    // visual gap and give the recovered space to the preset list.
+    // The 28px tab/action row ends at the derived action bottom; the
+    // scrollbar occupies the six pixels immediately below it.
     const auto preset_list_height =
         layout::PresetListViewportHeight(rect.getHeight());
     scroll_ = new PresetListScrollView(
@@ -446,6 +442,9 @@ class PresetPanel final : public SurfacePanel, public IControlListener {
     label->setHoriAlign(CHoriTxtAlign::kCenterText);
     label->setStyle(CParamDisplay::kNoFrame);
     label->SetIcon(icon);
+    if (emphasized) {
+      label->SetOutlined(true);
+    }
     ApplyControlHelpTooltip(label, help_id, ui::IsJapaneseEnvironment());
     return label;
   }

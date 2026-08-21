@@ -3,7 +3,6 @@
 #include "vst/editor.h"
 
 #include <algorithm>
-#include <array>
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -42,6 +41,7 @@
 #include "vst3sdk/vstgui4/vstgui/lib/cbitmapfilter.h"
 #include "vst3sdk/vstgui4/vstgui/lib/cfont.h"
 #include "vst3sdk/vstgui4/vstgui/lib/cframe.h"
+#include "vst3sdk/vstgui4/vstgui/lib/controls/cbuttons.h"
 #include "vst3sdk/vstgui4/vstgui/lib/controls/coptionmenu.h"
 #include "vst3sdk/vstgui4/vstgui/lib/cviewcontainer.h"
 #include "vst3sdk/vstgui4/vstgui/lib/platform/platformfactory.h"
@@ -50,10 +50,12 @@
 
 // Beatrice
 #include "common/error.h"
+#include "common/branding.h"
 #include "common/model_config.h"
 #include "common/parameter_schema.h"
 #include "common/voice_morph_parameter.h"
 #include "common/voice_morph_state.h"
+#include "common/wasapi_device_catalog.h"
 #include "ui/control_help.h"
 #include "vst/controller.h"
 #include "vst/control_help_tooltip.h"
@@ -68,6 +70,7 @@
 #include "vst/editor_ui_limits.h"
 #include "vst/editor_views.h"
 #include "vst/editor_voice_selector.h"
+#include "vst/level_indicator.h"
 #include "vst/parameter.h"
 #include "vst/surface_texture.h"
 
@@ -89,13 +92,13 @@ namespace beatrice::vst {
 
 namespace {
 
-class ColumnFocusOptionMenu final : public VSTGUI::COptionMenu {
+class ColumnFocusOptionMenu final : public TruncatingOptionMenu {
  public:
   ColumnFocusOptionMenu(const VSTGUI::CRect& size,
                         VSTGUI::IControlListener* listener, int32_t tag,
                         VSTGUI::CBitmap* background,
                         std::function<void()> focus_action)
-      : VSTGUI::COptionMenu(size, listener, tag, background),
+      : TruncatingOptionMenu(size, listener, tag, background),
         focus_action_(std::move(focus_action)) {}
 
   void onMouseDownEvent(VSTGUI::MouseDownEvent& event) override {
@@ -130,6 +133,68 @@ class ClickableImageView final : public VSTGUI::CView {
 };
 
 }  // namespace
+
+// A root-level view is required because the 480px portrait extends beyond the
+// centre column.  Only the displayed image rectangle accepts mouse input; the
+// rest of the editor remains available and the description below can scroll.
+class PortraitPopupView final : public VSTGUI::CView {
+ public:
+  PortraitPopupView(const VSTGUI::CRect& size,
+                    std::function<void()> dismiss_action)
+      : CView(size), dismiss_action_(std::move(dismiss_action)) {
+    setTransparency(true);
+    setVisible(false);
+  }
+
+  void Show(const VSTGUI::SharedPointer<VSTGUI::CBitmap>& bitmap,
+            const VSTGUI::CRect& target_rect) {
+    if (!bitmap) {
+      return;
+    }
+    bitmap_ = bitmap;
+    current_rect_ = target_rect;
+    setMouseableArea(current_rect_);
+    setVisible(true);
+    invalid();
+  }
+
+  void Hide() {
+    if (!isVisible()) {
+      return;
+    }
+    setVisible(false);
+    bitmap_ = nullptr;
+    invalid();
+  }
+
+  [[nodiscard]] auto IsShowing() const -> bool {
+    return isVisible();
+  }
+
+  void draw(VSTGUI::CDrawContext* const context) override {
+    if (bitmap_) {
+      const auto source = VSTGUI::CRect(
+          0, 0, bitmap_->getWidth(), bitmap_->getHeight());
+      context->fillRectWithBitmap(bitmap_.get(), source, current_rect_, 1.0F);
+    }
+    setDirty(false);
+  }
+
+  void onMouseDownEvent(VSTGUI::MouseDownEvent& event) override {
+    if (event.buttonState.isLeft() && dismiss_action_) {
+      dismiss_action_();
+      event.consumed = true;
+      event.ignoreFollowUpMoveAndUpEvents(true);
+      return;
+    }
+    CView::onMouseDownEvent(event);
+  }
+
+ private:
+  std::function<void()> dismiss_action_;
+  VSTGUI::SharedPointer<VSTGUI::CBitmap> bitmap_;
+  VSTGUI::CRect current_rect_;
+};
 
 using common::ParameterID;
 using Steinberg::ViewRect;
@@ -286,10 +351,9 @@ Editor::Editor(void* const controller)
       font_small_(typography::MakeSmallFont()),
       font_small_bold_(typography::MakeSmallFont(true)),
       font_tab_(typography::MakeTabFont()),
+      font_tab_bold_(typography::MakeTabFont(true)),
       font_heading_(typography::MakeHeadingFont()),
-      font_strong_(typography::MakeStrongFont()),
-      page_views_(),
-      page_tabs_() {
+      font_strong_(typography::MakeStrongFont()) {
   setRect(ViewRect(0, 0, layout::kWindowWidth, layout::kWindowHeight));
 }
 
@@ -300,16 +364,33 @@ Editor::~Editor() {
   font_small_->forget();
   font_small_bold_->forget();
   font_tab_->forget();
+  font_tab_bold_->forget();
   font_heading_->forget();
   font_strong_->forget();
 }
 
 auto PLUGIN_API Editor::open(void* const parent,
                              const PlatformType& /*platformType*/) -> bool {
+  return BuildFrame(parent, true, layout::kWindowWidth);
+}
+
+auto Editor::CreateStandaloneFrame(const VSTGUI::CCoord width)
+    -> VSTGUI::SharedPointer<CFrame> {
+  if (!BuildFrame(nullptr, false, width)) {
+    return {};
+  }
+  return VSTGUI::shared(frame);
+}
+
+auto Editor::BuildFrame(void* const parent, const bool attach_to_platform,
+                        const VSTGUI::CCoord width) -> bool {
   if (frame) {
     return false;
   }
-  frame = new CFrame(layout::WindowRect(), this);
+  standalone_frame_ = !attach_to_platform;
+  const auto window_rect = CRect(0, 0, std::max(width, layout::kWindowWidth),
+                                 layout::kWindowHeight);
+  frame = new CFrame(window_rect, this);
   if (!frame) {
     return false;
   }
@@ -350,7 +431,7 @@ auto PLUGIN_API Editor::open(void* const parent,
       .baked_grain_strength = 0.86,
   };
   const auto control_texture = SurfaceTextureParams{
-      .base = theme::kDropdown,
+      .base = theme::kMenuFill,
       .low_frequency_strength = 5.9,
       .fine_grain_strength = 0.95,
       .baked_grain_strength = 1.08,
@@ -372,11 +453,14 @@ auto PLUGIN_API Editor::open(void* const parent,
       new SurfaceBitmap(control_texture, surface_noise_maps, 512, 48));
 
   // ルートビュー
-  auto* const root = new SurfacePanel(layout::WindowRect(),
+  auto* const root = new SurfacePanel(window_rect,
                                       frame_surface, kTransparentCColor, 0.0);
   frame->addView(root);
 
   // UI 生成ヘルパー
+  // Shared UI builders. New labels, actions and option menus must pass
+  // through these helpers so alignment, fonts, focus behavior and theme
+  // roles remain identical in every tab.
   const auto make_label =
       [&](CViewContainer* parent, const CRect& rect, const char* text,
           CFontRef font, const CColor& color,
@@ -400,7 +484,7 @@ auto PLUGIN_API Editor::open(void* const parent,
   const auto add_title = [&](CViewContainer* parent, const CRect& rect,
                              const char* text) -> CTextLabel* {
     return make_label(parent, rect, text, font_heading_,
-                      theme::kText, CHoriTxtAlign::kLeftText);
+                      theme::kSectionTitle, CHoriTxtAlign::kLeftText);
   };
   const auto add_panel = [&](CViewContainer* parent,
                              const CRect& rect) -> SurfacePanel* {
@@ -426,19 +510,25 @@ auto PLUGIN_API Editor::open(void* const parent,
           action();
         });
     label->setBackColor(role == theme::ActionRole::kSwitch
-                            ? theme::kSwitch
-                            : theme::kActionButton);
+                            ? theme::kSwitchFill
+                            : theme::kActionFill);
     label->setFont(font_small_);
     label->SetStateFonts(font_small_, font_small_bold_);
-    label->setFontColor(theme::kAccent);
+    label->setFontColor(theme::kActionText);
     label->setHoriAlign(CHoriTxtAlign::kCenterText);
     label->setStyle(CParamDisplay::kNoFrame);
+    if (role == theme::ActionRole::kAction) {
+      label->SetOutlined(true);
+    }
     ApplyControlHelpTooltip(label, help_id, japanese_tooltips);
     parent->addView(label);
     return label;
   };
   const auto reset_parameters =
       [this](const std::initializer_list<ParamID> param_ids) -> void {
+    const auto was_applying_preset = applying_preset_;
+    applying_preset_ = true;
+    auto changed_parameter = std::optional<ParamID>{};
     for (const auto param_id : param_ids) {
       const auto it = controls_.find(param_id);
       if (it == controls_.end()) {
@@ -457,11 +547,22 @@ auto PLUGIN_API Editor::open(void* const parent,
       } else {
         continue;
       }
+      if (control->getValue() == default_value) {
+        continue;
+      }
+      if (!changed_parameter.has_value()) {
+        changed_parameter = param_id;
+      }
       control->beginEdit();
       control->setValue(default_value);
       control->valueChanged();
       control->endEdit();
       control->invalid();
+    }
+    applying_preset_ = was_applying_preset;
+    if (!was_applying_preset && changed_parameter.has_value()) {
+      UpdateSelectedPresetFromCurrentState(*changed_parameter, false);
+      ScheduleDeferredPresetSave();
     }
   };
   const auto add_slider = [&](CViewContainer* parent, ParamID param_id,
@@ -494,7 +595,9 @@ auto PLUGIN_API Editor::open(void* const parent,
     slider->setFineWheelInc(slider_spec.fine_wheel_increment);
     slider->SetKeyboardInc(slider_spec.keyboard_increment);
     slider->SetKeyboardFineInc(slider_spec.keyboard_fine_increment);
-    slider->SetWheelEditingEnabled(true);
+    // The wheel is reserved for page scrolling. Use drag or keyboard input
+    // to edit the parameter while the pointer remains over a slider.
+    slider->SetWheelEditingEnabled(false);
     slider->setDefaultValue(
         param->toPlain(param->getInfo().defaultNormalizedValue));
     slider->setValue(ui_limits::ClampForDisplay(
@@ -503,7 +606,7 @@ auto PLUGIN_API Editor::open(void* const parent,
     slider->SetFocusChangedAction(
         [this, slider]() { SetFocusedColumn(ColumnForView(slider)); });
     slider->SetDragFinishedAction(
-        [this]() { FlushDeferredPresetSave(); });
+        [this]() { ScheduleDeferredPresetSave(); });
     ApplyControlHelpTooltip(
         slider,
         ui::ControlHelpForParameter(static_cast<ParameterID>(param_id)),
@@ -534,7 +637,7 @@ auto PLUGIN_API Editor::open(void* const parent,
     slider->setMax(static_cast<float>(labels.size() - 1));
     slider->setWheelInc(1.0f);
     slider->setFineWheelInc(1.0f);
-    slider->SetWheelEditingEnabled(true);
+    slider->SetWheelEditingEnabled(false);
     slider->SetValueLabels(std::move(labels));
     slider->setDefaultValue(
         static_cast<float>(param->toPlain(param->getInfo().defaultNormalizedValue)));
@@ -542,7 +645,7 @@ auto PLUGIN_API Editor::open(void* const parent,
     slider->SetFocusChangedAction(
         [this, slider]() { SetFocusedColumn(ColumnForView(slider)); });
     slider->SetDragFinishedAction(
-        [this]() { FlushDeferredPresetSave(); });
+        [this]() { ScheduleDeferredPresetSave(); });
     ApplyControlHelpTooltip(
         slider,
         ui::ControlHelpForParameter(static_cast<ParameterID>(param_id)),
@@ -555,13 +658,14 @@ auto PLUGIN_API Editor::open(void* const parent,
   };
   const auto add_option_menu =
       [&](CViewContainer* parent, ParamID param_id, const CRect& rect,
-          const CColor& frame_color = theme::kPanelBorder,
-          const CColor& back_color = theme::kDropdown) -> COptionMenu* {
+          const CColor& frame_color = theme::kMenuFrame,
+          const CColor& back_color = theme::kMenuFill) -> COptionMenu* {
     auto* const param = static_cast<StringListParameter*>(
         controller->getParameterObject(param_id));
     auto* const bmp = new MonotoneBitmap(static_cast<int>(rect.getWidth()),
                                          static_cast<int>(rect.getHeight()),
-                                         back_color, frame_color, 3.0);
+                                         back_color, frame_color,
+                                         layout::kDropdownCornerRadius);
     const auto column = ColumnForView(parent);
     auto* const control = new ColumnFocusOptionMenu(
         rect, this, static_cast<int>(param_id), bmp,
@@ -576,14 +680,14 @@ auto PLUGIN_API Editor::open(void* const parent,
     control->setValue(static_cast<float>(
         param->toPlain(controller->getParamNormalized(param_id))));
     control->setFont(font_);
-    control->setFontColor(theme::kWarmText);
+    control->setFontColor(theme::kMenuText);
     ApplyControlHelpTooltip(
         control,
         ui::ControlHelpForParameter(static_cast<ParameterID>(param_id)),
         japanese_tooltips);
     parent->addView(control);
     auto* const chevron = new ChevronView(layout::DropdownChevronRect(rect),
-                                          theme::kAccent);
+                                          theme::kMenuChevron);
     chevron->setMouseEnabled(false);
     parent->addView(chevron);
     register_control(param_id, control);
@@ -591,12 +695,17 @@ auto PLUGIN_API Editor::open(void* const parent,
   };
 
   // ヘッダー
-  auto* const header =
-      new SurfacePanel(layout::HeaderPanelRect(), header_surface,
-                       theme::kHeaderOverlay, 0.0);
+  auto header_rect = layout::HeaderPanelRect();
+  header_rect.right = window_rect.right;
+  auto* const header = new SurfacePanel(header_rect, header_surface,
+                                        theme::kHeaderOverlay, 0.0);
   root->addView(header);
-  auto* const logo_view = new CView(layout::kHeaderLogoRect);
-  auto* const logo_bmp = new CBitmap("logo.png");
+  auto* const logo_bmp = new CBitmap("logo_forge.png");
+  const auto logo_size = VSTGUI::CRect(
+      layout::kHeaderLogoOrigin.x, layout::kHeaderLogoOrigin.y,
+      layout::kHeaderLogoOrigin.x + logo_bmp->getWidth(),
+      layout::kHeaderLogoOrigin.y + logo_bmp->getHeight());
+  auto* const logo_view = new CView(logo_size);
   logo_view->setBackground(logo_bmp);
   header->addView(logo_view);
   logo_bmp->forget();
@@ -648,7 +757,7 @@ auto PLUGIN_API Editor::open(void* const parent,
   // タブ
   // The development version string is longer than a release version. Give the
   // right-aligned label enough room so its leading "V" is not clipped.
-  make_label(header, layout::kHeaderVersionRect,
+  make_label(header, layout::HeaderVersionRect(window_rect.getWidth()),
              (UTF8String(layout::kHeaderVersionPrefix) + FULL_VERSION_STR).data(),
              font_small_,
              theme::kTextMuted, CHoriTxtAlign::kRightText);
@@ -658,7 +767,6 @@ auto PLUGIN_API Editor::open(void* const parent,
       layout::MainPageRect(), page_surface,
       kTransparentCColor, 0.0);
   root->addView(main_page);
-  page_views_[0] = main_page;
 
   // The columns are layout/background containers, not visual cards. Keeping
   // their border transparent prevents it from overlapping the full-width
@@ -681,11 +789,25 @@ auto PLUGIN_API Editor::open(void* const parent,
   RegisterFocusColumn(FocusColumn::kVoice, voice_column);
   RegisterFocusColumn(FocusColumn::kPresets, preset_column);
 
+  // The current content still fits exactly in these viewports, so the
+  // scrollbars remain hidden. Future controls can extend their content
+  // without changing the column geometry.
+  const auto column_body_rect =
+      layout::PanelRect(0, layout::kColumnContentHeight);
+  const auto column_content_rect =
+      CRect(0, 0, layout::kColumnWidth, layout::kColumnContentHeight);
+  auto* const control_scroll =
+      new VerticalScrollView(column_body_rect, column_content_rect);
+  auto* const voice_scroll =
+      new VerticalScrollView(column_body_rect, column_content_rect);
+  control_column->addView(control_scroll);
+  voice_column->addView(voice_scroll);
+
   // Main ページ左
   auto* gain_panel = add_panel(
-      control_column, layout::PanelRect(0, layout::kSettingsTopPanelHeight));
+      control_scroll, layout::PanelRect(0, layout::kSettingsTopPanelHeight));
   auto* const levels_panel =
-      add_panel(gain_panel, layout::PanelRect(layout::kSettingsTabBodyTop,
+      add_panel(gain_panel, layout::PanelRect(layout::kNonPresetTabBodyTop,
                                                layout::kSettingsTopPanelHeight));
   // The tab above already identifies this section; keep the title slot empty
   // so the established vertical rhythm remains unchanged.
@@ -696,6 +818,10 @@ auto PLUGIN_API Editor::open(void* const parent,
   add_slider(
       levels_panel, static_cast<ParamID>(ParameterID::kCompensatedDrive),
       layout::SettingsSliderRect(2));
+  input_level_ = new LevelIndicator(layout::SettingsMeterRect(0));
+  output_level_ = new LevelIndicator(layout::SettingsMeterRect(1));
+  levels_panel->addView(input_level_);
+  levels_panel->addView(output_level_);
   add_action(levels_panel, layout::ResetButtonRect(), "RESET",
              [reset_parameters]() {
                reset_parameters(
@@ -704,7 +830,7 @@ auto PLUGIN_API Editor::open(void* const parent,
                     static_cast<ParamID>(ParameterID::kCompensatedDrive)});
              }, theme::ActionRole::kAction);
   auto* const cleanup_panel =
-      add_panel(gain_panel, layout::PanelRect(layout::kSettingsTabBodyTop,
+      add_panel(gain_panel, layout::PanelRect(layout::kNonPresetTabBodyTop,
                                                layout::kSettingsTopPanelHeight));
   add_slider(cleanup_panel, static_cast<ParamID>(ParameterID::kLowCutHz),
              layout::SettingsSliderRect(0));
@@ -757,17 +883,17 @@ auto PLUGIN_API Editor::open(void* const parent,
   levels_tab->SetActive(true);
   cleanup_tab->SetActive(false);
   for (auto* const tab : {levels_tab, cleanup_tab}) {
-    tab->SetStateFonts(font_tab_, font_heading_);
-    tab->setFontColor(theme::kText);
+    tab->SetStateFonts(font_tab_, font_tab_bold_);
+    tab->SetStateTextColors(theme::kText, theme::kTextMuted);
   }
 
   auto* const shape_tabs_panel = add_panel(
-      control_column,
+      control_scroll,
       layout::PanelRect(layout::kSettingsBottomPanelTop,
                         layout::kColumnContentHeight));
   auto* const pitch_panel =
       add_panel(shape_tabs_panel,
-                layout::PanelRect(layout::kSettingsTabBodyTop,
+                layout::PanelRect(layout::kNonPresetTabBodyTop,
                                   layout::kSettingsTabBodyBottom));
   add_slider(pitch_panel, static_cast<ParamID>(ParameterID::kPitchShift),
              layout::SettingsSliderRect(0));
@@ -779,7 +905,7 @@ auto PLUGIN_API Editor::open(void* const parent,
              layout::ControlLabelRect(layout::kControlLabelTop,
                                       layout::kControlLabelBottom),
              "CONTROL", font_small_,
-             theme::kSecondaryText);
+             theme::kItemLabel);
   add_option_menu(pitch_panel, static_cast<ParamID>(ParameterID::kLock),
                   layout::ControlMenuRect(layout::kControlMenuTop,
                                           layout::kControlMenuBottom));
@@ -787,7 +913,8 @@ auto PLUGIN_API Editor::open(void* const parent,
              [reset_parameters]() {
                reset_parameters(
                    {static_cast<ParamID>(ParameterID::kPitchShift),
-                    static_cast<ParamID>(ParameterID::kFormantShift)});
+                    static_cast<ParamID>(ParameterID::kFormantShift),
+                    static_cast<ParamID>(ParameterID::kVQNumNeighbors)});
              }, theme::ActionRole::kAction);
 
   source_pitch_panel_ = add_panel(
@@ -811,8 +938,10 @@ auto PLUGIN_API Editor::open(void* const parent,
 
   auto* const tuning_panel = add_panel(
       shape_tabs_panel,
-      layout::PanelRect(layout::kSettingsTabBodyTop,
+      layout::PanelRect(layout::kNonPresetTabBodyTop,
                         layout::kSettingsTabBodyBottom));
+  add_title(tuning_panel, layout::PanelTitleRect(180.0),
+            "PITCH CORRECTION");
   add_slider(tuning_panel,
              static_cast<ParamID>(ParameterID::kIntonationIntensity),
              layout::SettingsSliderRect(0));
@@ -822,27 +951,42 @@ auto PLUGIN_API Editor::open(void* const parent,
              layout::ControlLabelRect(layout::kTuningControlLabelTop,
                                       layout::kTuningControlLabelBottom),
              "Pitch Correction Type",
-             font_small_, theme::kSecondaryText);
+             font_small_, theme::kItemLabel);
   add_option_menu(tuning_panel,
                   static_cast<ParamID>(ParameterID::kPitchCorrectionType),
                   layout::ContentRect(layout::kTuningControlMenuTop,
                                       layout::kTuningControlMenuBottom));
-  make_label(tuning_panel,
-             layout::ControlLabelRect(layout::kTuningLatencyLabelTop,
-                                      layout::kTuningLatencyLabelBottom),
-             "Latency Resporting", font_small_, theme::kSecondaryText);
-  add_option_menu(
-      tuning_panel, static_cast<ParamID>(ParameterID::kLatencyReporting),
-      layout::ContentRect(layout::kTuningLatencyMenuTop,
-                          layout::kTuningLatencyMenuBottom));
+  // Latency Reporting controls the delay value reported to a VST host. A
+  // standalone window has no host to compensate, so keep the parameter in
+  // the shared schema/state while omitting this UI section there.
+  if (!standalone_frame_) {
+    add_title(
+        tuning_panel,
+        layout::PanelSectionTitleRect(layout::kTuningLatencyTitleTop, 180.0),
+        "LATENCY");
+    make_label(tuning_panel,
+               layout::ControlLabelRect(layout::kTuningLatencyLabelTop,
+                                        layout::kTuningLatencyLabelBottom),
+               "Latency Reporting", font_small_, theme::kItemLabel);
+    add_option_menu(
+        tuning_panel, static_cast<ParamID>(ParameterID::kLatencyReporting),
+        layout::ContentRect(layout::kTuningLatencyMenuTop,
+                            layout::kTuningLatencyMenuBottom));
+  }
   add_action(tuning_panel, layout::ResetButtonRect(), "RESET",
-             [reset_parameters]() {
-               reset_parameters(
-                   {static_cast<ParamID>(ParameterID::kIntonationIntensity),
-                    static_cast<ParamID>(ParameterID::kPitchCorrection),
-                    static_cast<ParamID>(
-                        ParameterID::kPitchCorrectionType),
-                    static_cast<ParamID>(ParameterID::kLatencyReporting)});
+             [this, reset_parameters]() {
+               if (standalone_frame_) {
+                 reset_parameters(
+                     {static_cast<ParamID>(ParameterID::kIntonationIntensity),
+                      static_cast<ParamID>(ParameterID::kPitchCorrection),
+                      static_cast<ParamID>(ParameterID::kPitchCorrectionType)});
+               } else {
+                 reset_parameters(
+                     {static_cast<ParamID>(ParameterID::kIntonationIntensity),
+                      static_cast<ParamID>(ParameterID::kPitchCorrection),
+                      static_cast<ParamID>(ParameterID::kPitchCorrectionType),
+                      static_cast<ParamID>(ParameterID::kLatencyReporting)});
+               }
              }, theme::ActionRole::kAction);
   tuning_panel->setVisible(false);
   auto* const source_tab = add_action(
@@ -883,8 +1027,8 @@ auto PLUGIN_API Editor::open(void* const parent,
   source_tab->SetActive(true);
   tuning_tab->SetActive(false);
   for (auto* const tab : {source_tab, tuning_tab}) {
-    tab->SetStateFonts(font_tab_, font_heading_);
-    tab->setFontColor(theme::kText);
+    tab->SetStateFonts(font_tab_, font_tab_bold_);
+    tab->SetStateTextColors(theme::kText, theme::kTextMuted);
   }
   UpdateSourcePitchVisibility();
   UpdateCompensatedDriveUi();
@@ -894,13 +1038,11 @@ auto PLUGIN_API Editor::open(void* const parent,
   auto* portrait_panel = new SurfacePanel(
       normal_voice_geometry.panel, panel_surface, kTransparentCColor, 0.0);
   portrait_panel_ = portrait_panel;
-  voice_column->addView(portrait_panel);
+  voice_scroll->addView(portrait_panel);
   portrait_view_ = new ClickableImageView(
       layout::PortraitImageRect(), [this]() {
         FocusColumnRoot(FocusColumn::kVoice);
-        if (portrait_description_pane_) {
-          portrait_description_pane_->Expand();
-        }
+        ShowPortraitPopup();
       });
   portrait_panel->addView(portrait_view_);
   unloaded_logo_view_ = new CView(layout::kPortraitLogoRect);
@@ -913,7 +1055,8 @@ auto PLUGIN_API Editor::open(void* const parent,
   morph_pad_controller_ = std::make_unique<MorphPadController>(
       beatrice_controller->core_, *beatrice_controller, [this]() {
         UpdateSelectedPresetFromCurrentState(
-            static_cast<ParamID>(ParameterID::kVoiceMorphFalloff), true);
+            static_cast<ParamID>(ParameterID::kVoiceMorphFalloff), false);
+        ScheduleDeferredPresetSave();
       });
   auto* const morph_pad =
       new MorphPadView(layout::PortraitImageRect(),
@@ -939,14 +1082,14 @@ auto PLUGIN_API Editor::open(void* const parent,
         ShowDescriptionPopup(target, title, text, target_rect);
       },
       OpenDescriptionUrl);
-  voice_column->addView(portrait_description_pane_);
+  voice_scroll->addView(portrait_description_pane_);
   portrait_description_pane_->SetBodyVisible(false);
   portrait_description_pane_->setVisible(false);
 
   morph_mode_switch_ =
       new SurfacePanel(layout::MorphSwitchRect(), panel_surface,
                        kTransparentCColor, 0.0);
-  voice_column->addView(morph_mode_switch_);
+  voice_scroll->addView(morph_mode_switch_);
   simple_morph_tab_ =
       add_action(morph_mode_switch_, layout::SplitTabRect(1),
                  "SLIDER",
@@ -959,9 +1102,13 @@ auto PLUGIN_API Editor::open(void* const parent,
   // GAIN/INPUT CLEANUP and VOICE SHAPE/TUNING tabs.
   for (auto* const label : {simple_morph_tab_, advanced_morph_tab_}) {
     auto* const tab = static_cast<GlowingActionLabel*>(label);
-    tab->SetStateFonts(font_tab_, font_heading_);
-    tab->setFontColor(theme::kText);
+    tab->SetStateFonts(font_tab_, font_tab_bold_);
+    tab->SetStateTextColors(theme::kText, theme::kTextMuted);
   }
+  static_cast<GlowingActionLabel*>(simple_morph_tab_)
+      ->SetActive(simple_morph_mode_);
+  static_cast<GlowingActionLabel*>(advanced_morph_tab_)
+      ->SetActive(!simple_morph_mode_);
   simple_morph_panel_ = new SimpleMorphPanel(
       layout::PanelRect(layout::kMorphPortraitTop,
                         layout::kColumnContentHeight),
@@ -971,18 +1118,18 @@ auto PLUGIN_API Editor::open(void* const parent,
         SetFocusedColumn(FocusColumn::kVoice);
         ApplySimpleMorphWeights(weights, voice_count, save_now);
       },
-      [this]() { FlushDeferredPresetSave(); },
+      [this]() { ScheduleDeferredPresetSave(); },
       [this]() { ScheduleDeferredPresetSave(); },
       [this]() { SetFocusedColumn(FocusColumn::kVoice); });
   simple_morph_panel_->SetFocusAction(
       [this]() { FocusColumnRoot(FocusColumn::kVoice); });
   ApplyControlHelpTooltip(simple_morph_panel_, ui::ControlHelpID::kMorphSlider,
                           japanese_tooltips);
-  voice_column->addView(simple_morph_panel_);
+  voice_scroll->addView(simple_morph_panel_);
   morph_mode_switch_->setVisible(false);
   simple_morph_panel_->setVisible(false);
   morph_reset_button_ = add_action(
-      voice_column, layout::ResetButtonRect(layout::kMorphResetTop), "RESET",
+      voice_scroll, layout::ResetButtonRect(layout::kMorphResetTop), "RESET",
       [this]() { ResetMorph(simple_morph_mode_); },
       theme::ActionRole::kAction);
   morph_reset_button_->setVisible(false);
@@ -1000,7 +1147,7 @@ auto PLUGIN_API Editor::open(void* const parent,
   morph_falloff->SetFocusChangedAction(
       [this]() { SetFocusedColumn(FocusColumn::kVoice); });
   morph_falloff->SetDragFinishedAction(
-      [this]() { FlushDeferredPresetSave(); });
+      [this]() { ScheduleDeferredPresetSave(); });
   morph_falloff_slider_ = morph_falloff;
   ApplyControlHelpTooltip(morph_falloff_slider_,
                           ui::ControlHelpID::kMorphFalloff,
@@ -1022,8 +1169,8 @@ auto PLUGIN_API Editor::open(void* const parent,
       add_option_menu(voice_panel, static_cast<ParamID>(ParameterID::kVoice),
                       layout::ContentRect(layout::kVoiceSelectorTop,
                                           layout::kVoiceSelectorBottom, true),
-                      theme::kPanelBorder,
-                      theme::kDropdown);
+                      theme::kMenuFrame,
+                      theme::kMenuFill);
   voice_menu->setMouseEnabled(false);
   voice_menu->setFontColor(kTransparentCColor);
   voice_selector_ = new VoiceSelectorView(
@@ -1052,7 +1199,7 @@ auto PLUGIN_API Editor::open(void* const parent,
         ShowDescriptionPopup(target, title, text, target_rect);
       },
       OpenDescriptionUrl);
-  voice_column->addView(model_description_pane_);
+  voice_scroll->addView(model_description_pane_);
   model_description_pane_->SetTitleAlignment(CHoriTxtAlign::kCenterText);
   model_description_pane_->SetBodyVisible(true);
 
@@ -1074,7 +1221,7 @@ auto PLUGIN_API Editor::open(void* const parent,
         ShowDescriptionPopup(target, title, text, target_rect);
       },
       OpenDescriptionUrl);
-  voice_column->addView(voice_description_pane_);
+  voice_scroll->addView(voice_description_pane_);
   voice_description_pane_->SetTitleAlignment(CHoriTxtAlign::kCenterText);
   voice_description_pane_->SetBodyVisible(true);
 
@@ -1082,7 +1229,8 @@ auto PLUGIN_API Editor::open(void* const parent,
   const auto& preset_state = *std::get<std::unique_ptr<std::u8string>>(
       beatrice_controller->core_.parameter_state_.GetValue(
           ParameterID::kPresetData));
-  if (!preset_state.empty()) {
+  const auto has_persisted_preset_workspace = !preset_state.empty();
+  if (has_persisted_preset_workspace) {
     const auto serialized = std::string(
         reinterpret_cast<const char*>(preset_state.data()),
         preset_state.size());
@@ -1095,6 +1243,10 @@ auto PLUGIN_API Editor::open(void* const parent,
         common::PresetBank{.id = 1, .name = "Default"});
     preset_workspace_.selected_bank = 0;
     LoadCurrentPresetBank();
+    // A completely new editor starts with one clearly usable row.  Do not
+    // reset the live controls here: a host may already have supplied a model,
+    // and selecting/changing that model will populate this row below.
+    CreateNewPreset(false);
   }
   preset_panel_ = new PresetPanel(
       layout::PanelRect(0, layout::kColumnContentHeight), panel_surface,
@@ -1125,12 +1277,15 @@ auto PLUGIN_API Editor::open(void* const parent,
 
   // Shared right-column page for post-conversion effects. Controls are added
   // here as their DSP and parameter contracts are fixed.
+  effects_scroll_ =
+      new VerticalScrollView(column_body_rect, column_content_rect);
+  effects_scroll_->setVisible(false);
+  preset_column->addView(effects_scroll_);
   effects_panel_ = new SurfacePanel(
-      layout::PanelRect(0, layout::kColumnContentHeight), panel_surface,
-      kTransparentCColor, 2.0);
+      column_body_rect, panel_surface, kTransparentCColor, 2.0);
   effects_panel_->SetFocusAction(
       [this]() { FocusColumnRoot(FocusColumn::kPresets); });
-  preset_column->addView(effects_panel_);
+  effects_scroll_->addView(effects_panel_);
   auto* const clarity_panel = add_panel(
       effects_panel_,
       layout::PanelRect(layout::kEffectsClarityPanelTop,
@@ -1142,11 +1297,11 @@ auto PLUGIN_API Editor::open(void* const parent,
              layout::SettingsSliderRect(1));
   add_action(clarity_panel, layout::ResetButtonRect(), "RESET",
              [reset_parameters]() {
-               reset_parameters({
-                   static_cast<ParamID>(ParameterID::kDeMud),
-                   static_cast<ParamID>(ParameterID::kPresence),
-               });
-             });
+                reset_parameters({
+                    static_cast<ParamID>(ParameterID::kDeMud),
+                    static_cast<ParamID>(ParameterID::kPresence),
+                });
+              }, theme::ActionRole::kAction);
 
   auto* const reverb_panel = add_panel(
       effects_panel_,
@@ -1161,24 +1316,180 @@ auto PLUGIN_API Editor::open(void* const parent,
              layout::SettingsSliderRect(2));
   add_action(reverb_panel, layout::ResetButtonRect(), "RESET",
              [reset_parameters]() {
-               reset_parameters({
-                   static_cast<ParamID>(ParameterID::kReverbMix),
-                   static_cast<ParamID>(ParameterID::kReverbDecay),
-                   static_cast<ParamID>(ParameterID::kReverbTone),
-               });
-             });
+                reset_parameters({
+                    static_cast<ParamID>(ParameterID::kReverbMix),
+                    static_cast<ParamID>(ParameterID::kReverbDecay),
+                    static_cast<ParamID>(ParameterID::kReverbTone),
+                });
+              }, theme::ActionRole::kAction);
 
-  presets_tab_ = add_action(
-      preset_column, layout::SplitTabRect(0), "PRESETS",
-      [this]() { SelectRightPanel(false); });
-  effects_tab_ = add_action(
-      preset_column, layout::SplitTabRect(1), "EFFECTS",
-      [this]() { SelectRightPanel(true); });
-  for (auto* const tab : {presets_tab_, effects_tab_}) {
-    tab->SetStateFonts(font_tab_, font_heading_);
-    tab->setFontColor(theme::kText);
+  if (standalone_frame_) {
+    const auto standalone_content_rect =
+        CRect(0, 0, layout::kColumnWidth,
+              layout::kStandaloneInOutContentHeight);
+    standalone_inout_scroll_ = new VerticalScrollView(
+        column_body_rect, standalone_content_rect);
+    standalone_inout_scroll_->setVisible(false);
+    preset_column->addView(standalone_inout_scroll_);
+    // Keep the outer page surface present beneath the tab row, just like the
+    // PRESETS and EFFECTS pages.  The actual IN/OUT content remains inset by
+    // kSettingsTabBodyTop is the shared base; the standalone child geometry
+    // applies its own body offset so all IN/OUT controls move together.
+    auto* const inout_background = new SurfacePanel(
+        standalone_content_rect,
+        panel_surface, kTransparentCColor, 2.0);
+    standalone_inout_scroll_->addView(inout_background);
+    standalone_inout_panel_ = new SurfacePanel(
+        CRect(0, layout::kSettingsTabBodyTop, layout::kColumnWidth,
+              layout::kStandaloneInOutContentHeight),
+        panel_surface, kTransparentCColor, 2.0);
+    standalone_inout_scroll_->addView(standalone_inout_panel_);
+  } else {
+    const auto vst_content_rect =
+        CRect(0, 0, layout::kColumnWidth, layout::kColumnContentHeight);
+    vst_inout_scroll_ = new VerticalScrollView(column_body_rect,
+                                                vst_content_rect);
+    vst_inout_scroll_->setVisible(false);
+    preset_column->addView(vst_inout_scroll_);
+    auto* const vst_inout_background = new SurfacePanel(
+        vst_content_rect, panel_surface, kTransparentCColor, 2.0);
+    vst_inout_scroll_->addView(vst_inout_background);
+    vst_inout_panel_ = new SurfacePanel(
+        CRect(0, layout::kNonPresetTabBodyTop, layout::kColumnWidth,
+              layout::kColumnContentHeight),
+        panel_surface, kTransparentCColor, 2.0);
+    vst_inout_panel_->SetFocusAction(
+        [this]() { FocusColumnRoot(FocusColumn::kPresets); });
+    vst_inout_scroll_->addView(vst_inout_panel_);
+    make_label(vst_inout_panel_, layout::VstInOutTitleRect(), "OUTPUT",
+               font_heading_, theme::kSectionTitle);
+    make_label(vst_inout_panel_, layout::VstInOutOutputLabelRect(),
+               "OUTPUT DEVICE", font_small_, theme::kText);
+    const auto output_menu_rect = layout::VstInOutOutputMenuRect();
+    auto* const output_bmp = new MonotoneBitmap(
+        static_cast<int>(output_menu_rect.getWidth()),
+        static_cast<int>(output_menu_rect.getHeight()), theme::kMenuFill,
+        theme::kMenuFrame, layout::kDropdownCornerRadius);
+    vst_output_device_menu_ = new ColumnFocusOptionMenu(
+        output_menu_rect, this, -1, output_bmp,
+        [this]() { FocusColumnRoot(FocusColumn::kPresets); });
+    output_bmp->forget();
+    vst_output_device_menu_->setFont(font_);
+    vst_output_device_menu_->setFontColor(theme::kMenuText);
+    vst_output_device_menu_->addEntry("OFF");
+    ApplyControlHelpTooltip(vst_output_device_menu_,
+                             ui::ControlHelpID::kVstOutputDevice,
+                             japanese_tooltips);
+    vst_inout_panel_->addView(vst_output_device_menu_);
+    auto* const output_chevron = new ChevronView(
+        layout::DropdownChevronRect(output_menu_rect), theme::kMenuChevron);
+    output_chevron->setMouseEnabled(false);
+    vst_inout_panel_->addView(output_chevron);
+    vst_output_level_ = new LevelIndicator(layout::VstInOutOutputMeterRect());
+    vst_output_level_->SetEnabled(false);
+    vst_inout_panel_->addView(vst_output_level_);
+
+    vst_exclusive_checkbox_ = new VSTGUI::CCheckBox(
+        layout::VstInOutExclusiveRect(), this, -1, "WASAPI EXCLUSIVE");
+    vst_exclusive_checkbox_->setFont(font_small_);
+    vst_exclusive_checkbox_->setFontColor(theme::kText);
+    vst_exclusive_checkbox_->setBoxFrameColor(theme::kMenuFrame);
+    vst_exclusive_checkbox_->setBoxFillColor(theme::kMenuFill);
+    vst_exclusive_checkbox_->setCheckMarkColor(theme::kAccent);
+    vst_exclusive_checkbox_->setValue(0.0F);
+    ApplyControlHelpTooltip(vst_exclusive_checkbox_,
+                             ui::ControlHelpID::kVstWasapiExclusive,
+                             japanese_tooltips);
+    vst_inout_panel_->addView(vst_exclusive_checkbox_);
+
+    const auto recording_layout = layout::VstInOutRecordingGeometry();
+    add_title(vst_inout_panel_, recording_layout.title, "RECORDING");
+    make_label(vst_inout_panel_, recording_layout.mode_label,
+               "RECORDING MODE", font_small_, theme::kText);
+    const auto recording_menu_rect = recording_layout.mode_menu;
+    auto* const recording_bmp = new MonotoneBitmap(
+        static_cast<int>(recording_menu_rect.getWidth()),
+        static_cast<int>(recording_menu_rect.getHeight()), theme::kMenuFill,
+        theme::kMenuFrame, layout::kDropdownCornerRadius);
+    vst_recording_mode_menu_ = new ColumnFocusOptionMenu(
+        recording_menu_rect, this, -1, recording_bmp,
+        [this]() { FocusColumnRoot(FocusColumn::kPresets); });
+    recording_bmp->forget();
+    vst_recording_mode_menu_->setFont(font_);
+    vst_recording_mode_menu_->setFontColor(theme::kMenuText);
+    for (const auto* const label : common::kRecordingModeLabels) {
+      vst_recording_mode_menu_->addEntry(label);
+    }
+    ApplyControlHelpTooltip(vst_recording_mode_menu_,
+                             ui::ControlHelpID::kRecordingMode,
+                             japanese_tooltips);
+    vst_inout_panel_->addView(vst_recording_mode_menu_);
+    auto* const recording_chevron = new ChevronView(
+        layout::DropdownChevronRect(recording_menu_rect), theme::kMenuChevron);
+    vst_inout_panel_->addView(recording_chevron);
+
+    vst_record_button_ = add_action(
+        vst_inout_panel_, recording_layout.record_button, "Rec",
+        [this]() { ToggleVstRecording(); }, theme::ActionRole::kAction,
+        ui::ControlHelpID::kRecording);
+    vst_record_button_->SetIcon(ActionIcon::kRecord);
+    vst_record_button_->SetIconTextGap(10.0);
+    vst_record_button_->SetStateTextColors(theme::kText,
+                                           theme::kActionText);
+    vst_record_button_->SetActiveColor(theme::kDeleteConfirm);
+    vst_record_button_->SetInactiveColor(theme::kActionFill);
+    vst_record_path_button_ = add_action(
+        vst_inout_panel_, recording_layout.browse_button, "BROWSE",
+        [this]() { ChooseVstRecordingPath(); }, theme::ActionRole::kAction,
+        ui::ControlHelpID::kRecordingBrowse);
+    vst_recording_status_label_ = make_label(
+        vst_inout_panel_, recording_layout.status, "Ready to record.",
+        font_small_, theme::kDisabledText);
+    vst_recording_status_label_->setHoriAlign(CHoriTxtAlign::kLeftText);
+
+    auto* const controller = static_cast<Controller*>(getController());
+    if (controller != nullptr) {
+      controller->GetRecordingSelection(vst_recording_mode_,
+                                        vst_recording_path_);
+    }
+    if (vst_recording_path_.empty()) {
+      vst_recording_path_ =
+          common::MusicDirectory() /
+          std::string(common::kDefaultRecordingBaseName);
+    }
+    static_cast<void>(vst_recording_mode_menu_->setCurrent(
+        static_cast<int>(vst_recording_mode_)));
+    UpdateVstRecordingControls();
+    RefreshVstWasapiDevices();
   }
-  SelectRightPanel(false);
+
+  const auto right_tab_rect = [this](const int index) {
+    return layout::TripleTabRect(index);
+  };
+  presets_tab_ = add_action(
+      preset_column, right_tab_rect(0), "PRESETS",
+      [this]() { SelectRightPanel(0); });
+  effects_tab_ = add_action(
+      preset_column, right_tab_rect(1), "EFFECTS",
+      [this]() { SelectRightPanel(1); });
+  if (standalone_frame_) {
+    standalone_inout_tab_ = add_action(
+        preset_column, right_tab_rect(2), "IN/OUT",
+        [this]() { SelectRightPanel(2); });
+  } else {
+    vst_inout_tab_ = add_action(
+        preset_column, right_tab_rect(2), "IN/OUT",
+        [this]() { SelectRightPanel(2); });
+  }
+  for (auto* const tab : {presets_tab_, effects_tab_, standalone_inout_tab_,
+                          vst_inout_tab_}) {
+    if (!tab) {
+      continue;
+    }
+    tab->SetStateFonts(font_tab_, font_tab_bold_);
+    tab->SetStateTextColors(theme::kText, theme::kTextMuted);
+  }
+  SelectRightPanel(0);
   RefreshPresetPanel();
 
   // Voice 選択メニュー
@@ -1191,10 +1502,21 @@ auto PLUGIN_API Editor::open(void* const parent,
   description_popup_ = new DescriptionPopupView(
       layout::PanelRect(0, layout::kColumnContentHeight), panel_surface,
       kTransparentCColor, 0.0, font_heading_, font_description_,
-      OpenDescriptionUrl);
+      OpenDescriptionUrl, [this]() {
+        if (portrait_popup_view_) {
+          portrait_popup_view_->Hide();
+        }
+      });
   voice_column->addView(description_popup_);
 
-  if (!frame->open(parent)) {
+  // The enlarged portrait crosses the centre-column boundary, so it is
+  // attached to the root after the page overlays.  Its mouseable area remains
+  // limited to the bitmap itself.
+  portrait_popup_view_ = new PortraitPopupView(
+      layout::FullWindowRect(), [this]() { HidePortraitPopup(); });
+  root->addView(portrait_popup_view_);
+
+  if (attach_to_platform && !frame->open(parent)) {
     close();
     return false;
   }
@@ -1211,6 +1533,7 @@ auto PLUGIN_API Editor::open(void* const parent,
   SyncSourcePitchRange();
   SyncParameterAvailability();
   UpdateSourcePitchVisibility();
+  RestoreMorphViewModeFromCurrentPreset();
 
   // デバッグ用
   if (const auto model_path = GetScreenshotModelPath(); !model_path.empty()) {
@@ -1227,11 +1550,24 @@ auto PLUGIN_API Editor::open(void* const parent,
     valueChanged(voice_control);
   }
 
+  if (!standalone_frame_) {
+    audio_level_timer_ = VSTGUI::owned(new VSTGUI::CVSTGUITimer(
+        [this](VSTGUI::CVSTGUITimer*) {
+          PollAudioLevels();
+          PollVstRecordingStatus();
+        },
+        layout::kAudioLevelPollMilliseconds));
+  }
+
   return true;
 }
 void PLUGIN_API Editor::close() {
   if (frame) {
     FlushDeferredPresetSave();
+    if (audio_level_timer_) {
+      audio_level_timer_->stop();
+      audio_level_timer_ = nullptr;
+    }
     if (morph_pad_view_ && morph_pad_view_->isEditing()) {
       morph_pad_view_->endEdit();
     }
@@ -1240,10 +1576,12 @@ void PLUGIN_API Editor::close() {
     japanese_tooltips_ = false;
     controls_.clear();
     portraits_.clear();
+    portrait_popup_bitmaps_.clear();
     portrait_menu_thumbnails_.clear();
     portrait_marker_thumbnails_.clear();
     portrait_view_ = nullptr;
     portrait_panel_ = nullptr;
+    portrait_popup_view_ = nullptr;
     unloaded_logo_view_ = nullptr;
     morph_pad_controller_.reset();
     morph_pad_view_ = nullptr;
@@ -1252,11 +1590,29 @@ void PLUGIN_API Editor::close() {
     morph_mode_switch_ = nullptr;
     simple_morph_tab_ = nullptr;
     advanced_morph_tab_ = nullptr;
-    simple_morph_mode_ = true;
+    simple_morph_mode_ = false;
     preset_panel_ = nullptr;
+    effects_scroll_ = nullptr;
     effects_panel_ = nullptr;
+    standalone_inout_scroll_ = nullptr;
+    standalone_inout_panel_ = nullptr;
+    vst_inout_scroll_ = nullptr;
+    vst_inout_panel_ = nullptr;
+    vst_output_device_menu_ = nullptr;
+    vst_exclusive_checkbox_ = nullptr;
+    vst_output_level_ = nullptr;
+    vst_output_device_ids_.clear();
+    vst_recording_mode_menu_ = nullptr;
+    vst_record_button_ = nullptr;
+    vst_record_path_button_ = nullptr;
+    vst_recording_status_label_ = nullptr;
+    input_level_ = nullptr;
+    output_level_ = nullptr;
     presets_tab_ = nullptr;
     effects_tab_ = nullptr;
+    standalone_inout_tab_ = nullptr;
+    vst_inout_tab_ = nullptr;
+    standalone_frame_ = false;
     portrait_description_pane_ = nullptr;
     morph_falloff_slider_ = nullptr;
     morph_reset_button_ = nullptr;
@@ -1266,41 +1622,10 @@ void PLUGIN_API Editor::close() {
     voice_menu_overlay_ = nullptr;
     description_popup_ = nullptr;
     model_name_label_ = nullptr;
-    page_views_ = {};
-    page_tabs_ = {};
-    tab_indicator_ = nullptr;
     focus_columns_.clear();
     focused_column_ = FocusColumn::kNone;
     voice_morph_state_ = {};
   }
-}
-
-void Editor::SelectPage(const int page) {
-  const auto page_count = static_cast<int>(page_views_.size());
-  for (auto i = 0; i < page_count; ++i) {
-    if (page_views_[i]) {
-      page_views_[i]->setVisible(i == page);
-      page_views_[i]->setDirty();
-    }
-    if (page_tabs_[i]) {
-      const auto selected = i == page;
-      page_tabs_[i]->setFontColor(selected ? theme::kTextAccent
-                                           : theme::kTextMuted);
-      page_tabs_[i]->setStyle(CParamDisplay::kNoFrame);
-      if (auto* const tab = dynamic_cast<GlowingActionLabel*>(page_tabs_[i])) {
-        tab->SetActive(selected);
-      }
-      page_tabs_[i]->setDirty();
-    }
-  }
-  if (tab_indicator_ && page >= 0 && page < page_count) {
-    const auto indicator_rect = layout::PageIndicatorRect(page);
-    tab_indicator_->setViewSize(indicator_rect);
-    tab_indicator_->setMouseableArea(indicator_rect);
-    tab_indicator_->setDirty();
-  }
-  HideVoiceMenu();
-  HideDescriptionPopup();
 }
 
 void Editor::SetPortraitDescriptionText(const std::u8string& text) {
@@ -1338,6 +1663,7 @@ void Editor::SetVoiceSelectorDisplay(const int voice_id) {
   if (voice_selector_) {
     voice_selector_->SetDisplay(model_config_, portrait_menu_thumbnails_,
                                 voice_id);
+    voice_selector_->setDirty();
   }
 }
 
@@ -1397,6 +1723,9 @@ void Editor::ShowDescriptionPopup(const DescriptionTarget target,
   if (morphing_active_) {
     return;
   }
+  if (portrait_popup_view_ && portrait_popup_view_->IsShowing()) {
+    portrait_popup_view_->Hide();
+  }
   HideVoiceMenu();
   if (description_popup_) {
     if (description_popup_->IsShowing(target)) {
@@ -1407,8 +1736,389 @@ void Editor::ShowDescriptionPopup(const DescriptionTarget target,
   }
 }
 
+void Editor::SetAudioLevels(const float input_peak, const float output_peak) {
+  if (input_level_ != nullptr) {
+    input_level_->SetPeak(input_peak);
+  }
+  if (output_level_ != nullptr) {
+    output_level_->SetPeak(output_peak);
+  }
+  if (vst_output_level_ != nullptr) {
+    vst_output_level_->SetPeak(output_peak);
+  }
+}
+
+void Editor::SyncVstExternalState() {
+  if (standalone_frame_) {
+    return;
+  }
+  auto* const controller = static_cast<Controller*>(getController());
+  if (controller == nullptr) {
+    return;
+  }
+  controller->GetRecordingSelection(vst_recording_mode_, vst_recording_path_);
+  if (vst_recording_path_.empty()) {
+    vst_recording_path_ = common::MusicDirectory() /
+                          std::string(common::kDefaultRecordingBaseName);
+  }
+  if (vst_output_device_menu_ != nullptr) {
+    RefreshVstWasapiDevices();
+  }
+  if (vst_recording_mode_menu_ != nullptr) {
+    static_cast<void>(vst_recording_mode_menu_->setCurrent(
+        static_cast<int>(vst_recording_mode_)));
+    UpdateVstRecordingControls();
+  }
+}
+
+void Editor::PollAudioLevels() {
+  if (standalone_frame_ || frame == nullptr) {
+    return;
+  }
+  auto* const controller = static_cast<Controller*>(getController());
+  if (controller == nullptr) {
+    return;
+  }
+  float input_peak = 0.0F;
+  float output_peak = 0.0F;
+  controller->GetAudioLevels(input_peak, output_peak);
+  SetAudioLevels(input_peak, output_peak);
+}
+
+void Editor::PollVstRecordingStatus() {
+  if (standalone_frame_ || frame == nullptr) {
+    return;
+  }
+  auto* const controller = static_cast<Controller*>(getController());
+  if (controller == nullptr) {
+    return;
+  }
+  UpdateVstRecordingControls();
+}
+
+void Editor::ChooseVstRecordingPath() {
+  if (frame == nullptr) {
+    return;
+  }
+  auto* const selector = VSTGUI::CNewFileSelector::create(
+      frame, VSTGUI::CNewFileSelector::kSelectSaveFile);
+  if (selector == nullptr) {
+    return;
+  }
+  const auto extension = VSTGUI::CFileExtension("WAVE Audio", "wav");
+  selector->setTitle("Choose Recording Location");
+  const auto selected_directory = vst_recording_path_.empty()
+                                      ? std::filesystem::path{}
+                                      : vst_recording_path_.parent_path();
+  const auto initial_directory =
+      (selected_directory.empty() ? common::MusicDirectory()
+                                  : selected_directory)
+          .u8string();
+  selector->setInitialDirectory(reinterpret_cast<const char*>(
+      initial_directory.c_str()));
+  selector->setDefaultExtension(extension);
+  selector->addFileExtension(extension);
+  selector->setDefaultSaveName(common::kDefaultRecordingBaseName.data());
+  if (selector->runModal() && selector->getNumSelectedFiles() > 0) {
+    if (const auto* const selected = selector->getSelectedFile(0)) {
+      vst_recording_path_ = std::filesystem::path(std::u8string(
+          reinterpret_cast<const char8_t*>(selected)));
+      if (auto* const controller = static_cast<Controller*>(getController());
+          controller != nullptr) {
+        controller->SetRecordingSelection(vst_recording_mode_,
+                                          vst_recording_path_);
+        SendVstRecordingSelection();
+      }
+      UpdateVstRecordingControls();
+    }
+  }
+  selector->forget();
+}
+
+void Editor::StartVstRecording() {
+  if (vst_recording_mode_ == common::RecordingMode::kOff) {
+    return;
+  }
+  auto* const controller = static_cast<Controller*>(getController());
+  if (controller == nullptr) {
+    return;
+  }
+  if (vst_recording_path_.empty()) {
+    vst_recording_path_ = common::MusicDirectory() /
+                          std::string(common::kDefaultRecordingBaseName);
+  }
+  controller->SetRecordingSelection(vst_recording_mode_, vst_recording_path_);
+  SendVstRecordingSelection();
+  SendVstRecordingStart();
+  UpdateVstRecordingControls();
+}
+
+void Editor::StopVstRecording() {
+  SendVstRecordingStop();
+  UpdateVstRecordingControls();
+}
+
+void Editor::ToggleVstRecording() {
+  auto* const controller = static_cast<Controller*>(getController());
+  if (controller == nullptr) {
+    return;
+  }
+  common::RecordingStatus status;
+  controller->GetRecordingStatus(status);
+  if (status.recording) {
+    StopVstRecording();
+  } else {
+    StartVstRecording();
+  }
+}
+
+void Editor::UpdateVstRecordingControls() {
+  if (vst_record_button_ == nullptr || vst_recording_mode_menu_ == nullptr) {
+    return;
+  }
+  auto* const controller = static_cast<Controller*>(getController());
+  if (controller == nullptr) {
+    return;
+  }
+  common::RecordingStatus status;
+  controller->GetRecordingStatus(status);
+  vst_record_button_->SetActive(status.recording);
+  vst_record_button_->setText(status.recording ? "STOP" : "Rec");
+  vst_record_button_->SetIcon(status.recording ? ActionIcon::kStop
+                                               : ActionIcon::kRecord);
+  vst_record_button_->setMouseEnabled(
+      status.recording || vst_recording_mode_ != common::RecordingMode::kOff);
+  vst_record_button_->setDirty();
+  vst_recording_mode_menu_->setMouseEnabled(!status.recording);
+  vst_recording_mode_menu_->setWantsFocus(!status.recording);
+  vst_recording_mode_menu_->setAlphaValue(status.recording ? 0.35 : 1.0);
+  vst_recording_mode_menu_->setDirty();
+  if (vst_recording_status_label_ != nullptr) {
+    auto text = std::string{};
+    if (status.recording) {
+      text = "RECORDING  " + std::to_string(status.frames) + " frames";
+    } else if (!status.error.empty()) {
+      text = status.error;
+    } else if (status.dropped_frames > 0) {
+      text = "Dropped frames: " + std::to_string(status.dropped_frames);
+    } else {
+      text = "Ready to record.";
+    }
+    vst_recording_status_label_->setText(text.c_str());
+    vst_recording_status_label_->invalid();
+  }
+}
+
+void Editor::SendVstRecordingStart() {
+  auto* const controller = static_cast<Controller*>(getController());
+  if (controller == nullptr || vst_recording_mode_ == common::RecordingMode::kOff) {
+    return;
+  }
+  const auto path = vst_recording_path_.u8string();
+  if (path.empty()) {
+    return;
+  }
+  if (const auto message = Steinberg::owned(controller->allocateMessage())) {
+    message->setMessageID("recording_start");
+    auto* const attributes = message->getAttributes();
+    attributes->setInt("mode", static_cast<Steinberg::int64>(
+                                   vst_recording_mode_));
+    attributes->setBinary(
+        "base_path", reinterpret_cast<const char*>(path.data()),
+        static_cast<Steinberg::uint32>(path.size()));
+    controller->sendMessage(message);
+  }
+}
+
+void Editor::SendVstRecordingSelection() {
+  auto* const controller = static_cast<Controller*>(getController());
+  if (controller == nullptr) {
+    return;
+  }
+  const auto path = vst_recording_path_.u8string();
+  controller->setDirty(true);
+  if (const auto message = Steinberg::owned(controller->allocateMessage())) {
+    message->setMessageID("recording_selection");
+    auto* const attributes = message->getAttributes();
+    if (attributes == nullptr) {
+      return;
+    }
+    static_cast<void>(attributes->setInt(
+        "mode", static_cast<Steinberg::int64>(vst_recording_mode_)));
+    static_cast<void>(attributes->setBinary(
+        "base_path", reinterpret_cast<const char*>(path.data()),
+        static_cast<Steinberg::uint32>(path.size())));
+    controller->sendMessage(message);
+  }
+}
+
+void Editor::SendVstRecordingStop() {
+  auto* const controller = static_cast<Controller*>(getController());
+  if (controller == nullptr) {
+    return;
+  }
+  if (const auto message = Steinberg::owned(controller->allocateMessage())) {
+    message->setMessageID("recording_stop");
+    controller->sendMessage(message);
+  }
+}
+
+void Editor::RefreshVstWasapiDevices() {
+  if (standalone_frame_ || vst_output_device_menu_ == nullptr) {
+    return;
+  }
+  vst_output_device_menu_->removeAllEntry();
+  vst_output_device_menu_->addEntry("OFF");
+  vst_output_device_ids_.clear();
+
+  const auto snapshot = common::EnumerateWasapiDevices();
+  for (const auto& device : snapshot.outputs) {
+    vst_output_device_ids_.push_back(device.id);
+    auto name = device.name;
+    if (device.is_default) {
+      name += " (Default)";
+    }
+    vst_output_device_menu_->addEntry(("[WASAPI] " + name).c_str());
+  }
+
+  auto* const controller = static_cast<Controller*>(getController());
+  auto selected_id = std::string{};
+  auto exclusive = false;
+  if (controller != nullptr) {
+    controller->GetDirectWasapiSelection(selected_id, exclusive);
+  }
+  auto selected_index = 0;
+  for (auto index = std::size_t{0}; index < vst_output_device_ids_.size();
+       ++index) {
+    if (vst_output_device_ids_[index] == selected_id) {
+      selected_index = static_cast<int>(index + 1);
+      break;
+    }
+  }
+  static_cast<void>(vst_output_device_menu_->setCurrent(selected_index));
+  vst_exclusive_checkbox_->setValue(
+      selected_index > 0 && exclusive ? 1.0F : 0.0F);
+  UpdateVstDirectWasapiControls();
+}
+
+void Editor::UpdateVstDirectWasapiControls() {
+  if (vst_output_device_menu_ == nullptr || vst_exclusive_checkbox_ == nullptr) {
+    return;
+  }
+  const auto enabled = vst_output_device_menu_->getCurrentIndex() > 0;
+  if (vst_output_level_ != nullptr) {
+    vst_output_level_->SetEnabled(enabled);
+  }
+  vst_exclusive_checkbox_->setMouseEnabled(enabled);
+  vst_exclusive_checkbox_->setWantsFocus(enabled);
+  vst_exclusive_checkbox_->setAlphaValue(enabled ? 1.0 : 0.35);
+  if (!enabled) {
+    vst_exclusive_checkbox_->setValue(0.0F);
+  }
+  vst_exclusive_checkbox_->setDirty();
+}
+
+void Editor::SendVstDirectWasapiOff() {
+  auto* const controller = static_cast<Controller*>(getController());
+  if (controller == nullptr) {
+    return;
+  }
+  controller->ClearDirectWasapiSelection();
+  controller->setDirty(true);
+  if (const auto message = Steinberg::owned(controller->allocateMessage())) {
+    message->setMessageID("direct_wasapi_off");
+    controller->sendMessage(message);
+  }
+}
+
+void Editor::SendVstDirectWasapiSelection() {
+  if (vst_output_device_menu_ == nullptr) {
+    return;
+  }
+  const auto selected_index = vst_output_device_menu_->getCurrentIndex();
+  if (selected_index <= 0 ||
+      selected_index > static_cast<int>(vst_output_device_ids_.size())) {
+    SendVstDirectWasapiOff();
+    UpdateVstDirectWasapiControls();
+    return;
+  }
+  auto* const controller = static_cast<Controller*>(getController());
+  if (controller == nullptr) {
+    return;
+  }
+  const auto& device_id = vst_output_device_ids_[selected_index - 1];
+  const auto exclusive = vst_exclusive_checkbox_->getValue() > 0.5F;
+  controller->SetDirectWasapiSelection(device_id, exclusive);
+  controller->setDirty(true);
+  if (const auto message = Steinberg::owned(controller->allocateMessage())) {
+    message->setMessageID("direct_wasapi_config");
+    auto* const attributes = message->getAttributes();
+    attributes->setBinary("device_id", device_id.data(),
+                          static_cast<Steinberg::uint32>(device_id.size()));
+    attributes->setInt("exclusive", exclusive ? 1 : 0);
+    controller->sendMessage(message);
+  }
+  UpdateVstDirectWasapiControls();
+}
+
 void Editor::HideDescriptionPopup() {
   if (description_popup_) {
+    description_popup_->Hide();
+  }
+  if (portrait_popup_view_) {
+    portrait_popup_view_->Hide();
+  }
+}
+
+void Editor::ShowPortraitPopup() {
+  if (!model_config_.has_value() || morphing_active_ ||
+      !portrait_popup_view_) {
+    return;
+  }
+  if (portrait_popup_view_->IsShowing()) {
+    HidePortraitPopup();
+    return;
+  }
+  const auto* const voice_control = GetVoiceControl();
+  if (!voice_control) {
+    return;
+  }
+  const auto voice_id = static_cast<int>(std::round(voice_control->getValue()));
+  if (voice_id < 0 ||
+      voice_id >= static_cast<int>(model_config_->voices.size())) {
+    return;
+  }
+  const auto& voice = model_config_->voices[voice_id];
+  const auto bitmap_it = portrait_popup_bitmaps_.find(voice.portrait.path);
+  if (bitmap_it == portrait_popup_bitmaps_.end() || !bitmap_it->second) {
+    if (portrait_description_pane_) {
+      portrait_description_pane_->Expand();
+    }
+    return;
+  }
+
+  HideVoiceMenu();
+  if (description_popup_) {
+    description_popup_->Hide();
+  }
+  const auto& bitmap = bitmap_it->second;
+  const auto target_rect = layout::PortraitPopupRect(
+      bitmap->getWidth(), bitmap->getHeight());
+  portrait_popup_view_->Show(bitmap, target_rect);
+  if (description_popup_) {
+    description_popup_->Show(
+        DescriptionTarget::kPortrait, "PORTRAIT DESCRIPTION",
+        voice.portrait.description,
+        layout::PortraitPopupDescriptionRect(target_rect));
+  }
+}
+
+void Editor::HidePortraitPopup() {
+  if (portrait_popup_view_) {
+    portrait_popup_view_->Hide();
+  }
+  if (description_popup_ &&
+      description_popup_->IsShowing(DescriptionTarget::kPortrait)) {
     description_popup_->Hide();
   }
 }
@@ -1450,27 +2160,51 @@ void Editor::SetFocusedColumn(const FocusColumn column) {
   focused_column_ = column;
 }
 
-void Editor::SelectRightPanel(const bool effects) {
+void Editor::SelectRightPanel(const int page) {
+  const auto presets = page == 0;
+  const auto effects = page == 1;
+  const auto inout = page == 2;
   if (preset_panel_) {
-    preset_panel_->setVisible(!effects);
+    preset_panel_->setVisible(presets);
     preset_panel_->setDirty();
   }
-  if (effects_panel_) {
+  if (effects_scroll_) {
+    effects_scroll_->setVisible(effects);
+    effects_scroll_->setDirty();
+  } else if (effects_panel_) {
     effects_panel_->setVisible(effects);
     effects_panel_->setDirty();
   }
+  if (standalone_inout_scroll_) {
+    standalone_inout_scroll_->setVisible(inout && standalone_frame_);
+    standalone_inout_scroll_->setDirty();
+  }
+  if (vst_inout_scroll_) {
+    vst_inout_scroll_->setVisible(inout && !standalone_frame_);
+    vst_inout_scroll_->setDirty();
+  }
   if (presets_tab_) {
-    presets_tab_->SetActive(!effects);
+    presets_tab_->SetActive(presets);
   }
   if (effects_tab_) {
     effects_tab_->SetActive(effects);
+  }
+  if (standalone_inout_tab_) {
+    standalone_inout_tab_->SetActive(inout && standalone_frame_);
+  }
+  if (vst_inout_tab_) {
+    vst_inout_tab_->SetActive(inout && !standalone_frame_);
   }
   if (!frame || !frame->isAttached()) {
     return;
   }
   if (effects && effects_panel_) {
     frame->setFocusView(effects_panel_);
-  } else if (!effects && preset_panel_) {
+  } else if (inout && standalone_frame_ && standalone_inout_panel_) {
+    frame->setFocusView(standalone_inout_panel_);
+  } else if (inout && !standalone_frame_ && vst_inout_panel_) {
+    frame->setFocusView(vst_inout_panel_);
+  } else if (presets && preset_panel_) {
     frame->setFocusView(preset_panel_);
   }
 }
@@ -1500,8 +2234,19 @@ void Editor::FocusColumnRoot(const FocusColumn column) {
     return;
   }
   if (column == FocusColumn::kPresets) {
-    if (effects_panel_ && effects_panel_->isVisible()) {
+    if (effects_panel_ &&
+        (!effects_scroll_ || effects_scroll_->isVisible())) {
       frame->setFocusView(effects_panel_);
+      return;
+    }
+    if (standalone_inout_panel_ && standalone_inout_scroll_ &&
+        standalone_inout_scroll_->isVisible()) {
+      frame->setFocusView(standalone_inout_panel_);
+      return;
+    }
+    if (vst_inout_panel_ && vst_inout_scroll_ &&
+        vst_inout_scroll_->isVisible()) {
+      frame->setFocusView(vst_inout_panel_);
       return;
     }
     if (preset_panel_) {
@@ -1543,6 +2288,9 @@ void Editor::UpdateCompensatedDriveUi() {
   auto* const input = static_cast<Slider*>(input_it->second);
   const auto active = drive->getValue() > 0.0f;
   input->SetEnabled(!active);
+  if (input_level_ != nullptr) {
+    input_level_->SetEnabled(!active);
+  }
   input->invalid();
 }
 
@@ -1564,7 +2312,7 @@ void Editor::UpdateBypassUi(const bool bypassed) {
   bypass_button_->invalid();
 }
 
-void Editor::SetSimpleMorphMode(const bool simple) {
+void Editor::ApplyMorphViewMode(const bool simple) {
   simple_morph_mode_ = simple;
   if (simple_morph_tab_) {
     static_cast<GlowingActionLabel*>(simple_morph_tab_)->SetActive(simple);
@@ -1579,6 +2327,15 @@ void Editor::SetSimpleMorphMode(const bool simple) {
       static_cast<int>(std::round(voice_control->getValue())) >=
           common::GetVoiceCount(*model_config_);
   UpdateMorphUiVisibility(morphing);
+}
+
+void Editor::SetSimpleMorphMode(const bool simple) {
+  ApplyMorphViewMode(simple);
+  const auto* const voice_control = GetVoiceControl();
+  const auto morphing =
+      model_config_.has_value() && voice_control &&
+      static_cast<int>(std::round(voice_control->getValue())) >=
+          common::GetVoiceCount(*model_config_);
   if (!simple && morphing) {
     for (const auto [param_id, value] :
          common::GetVoiceMorphParameterValues(voice_morph_state_)) {
@@ -1593,11 +2350,37 @@ void Editor::SetSimpleMorphMode(const bool simple) {
                             common::GetVoiceCount(*model_config_), false);
   }
   UpdateSelectedPresetFromCurrentState(
-      static_cast<ParamID>(ParameterID::kSimpleMorphWeights), true);
+      static_cast<ParamID>(ParameterID::kSimpleMorphWeights), false);
+  ScheduleDeferredPresetSave();
+}
+
+void Editor::RestoreMorphViewModeFromCurrentPreset() {
+  if (!model_config_.has_value() || selected_preset_ < 0 ||
+      selected_preset_ >= static_cast<int>(presets_.size())) {
+    return;
+  }
+  auto* const controller = static_cast<Controller*>(getController());
+  const auto& model = *std::get<std::unique_ptr<std::u8string>>(
+      controller->core_.parameter_state_.GetValue(ParameterID::kModel));
+  const auto& preset = presets_[selected_preset_];
+  const auto voice = std::get<int>(controller->core_.parameter_state_.GetValue(
+      ParameterID::kVoice));
+  if (preset.model_path != model ||
+      voice < common::GetVoiceCount(*model_config_)) {
+    return;
+  }
+  ApplyMorphViewMode(preset.simple_morph_mode);
 }
 
 void Editor::UpdateMorphUiVisibility(const bool morphing) {
+  const auto entering_morph = morphing && !morphing_active_;
   morphing_active_ = morphing;
+  // A user entering morphing mode starts with the PAD.  During preset or
+  // state restoration the saved view mode is applied separately and must not
+  // be overwritten by this default.
+  if (entering_morph && !applying_preset_) {
+    simple_morph_mode_ = false;
+  }
   if (morphing) {
     HideDescriptionPopup();
   }
@@ -1626,7 +2409,18 @@ void Editor::UpdateMorphUiVisibility(const bool morphing) {
     model_description_pane_->setVisible(!morphing);
   }
   if (voice_description_pane_) {
-    voice_description_pane_->setVisible(!morphing);
+    const auto voice_description_rect =
+        morphing && !simple_morph_mode_
+            ? layout::MorphVoiceDescriptionRect()
+            : layout::PanelRect(layout::kVoiceDescriptionTop,
+                                layout::kColumnContentHeight);
+    voice_description_pane_->setViewSize(voice_description_rect);
+    voice_description_pane_->setMouseableArea(voice_description_rect);
+    // The 2D PAD reuses the normal VOICE DESCRIPTION pane below Morph
+    // Falloff.  SLIDER mode keeps that pane hidden because its own list
+    // occupies the lower part of the voice column.
+    voice_description_pane_->setVisible(!morphing || !simple_morph_mode_);
+    voice_description_pane_->setDirty();
   }
   if (portrait_description_pane_) {
     portrait_description_pane_->setVisible(morphing && !simple_morph_mode_);
@@ -1694,7 +2488,8 @@ void Editor::ResetMorph(const bool simple) {
                       Normalize(parameter, value));
   }
   UpdateSelectedPresetFromCurrentState(
-      static_cast<ParamID>(ParameterID::kVoiceMorphFalloff), true);
+      static_cast<ParamID>(ParameterID::kVoiceMorphFalloff), false);
+  ScheduleDeferredPresetSave();
 }
 
 void Editor::ApplySimpleMorphWeights(
@@ -1705,10 +2500,13 @@ void Editor::ApplySimpleMorphWeights(
       common::SerializeSimpleMorphWeights(weights, voice_count);
   controller->core_.parameter_state_.SetValue(
       ParameterID::kSimpleMorphWeights, serialized);
-  controller->SetStringParameter(
-      static_cast<ParamID>(ParameterID::kSimpleMorphWeights), serialized);
+  static_cast<void>(controller->SetStringParameter(
+      static_cast<ParamID>(ParameterID::kSimpleMorphWeights), serialized));
   UpdateSelectedPresetFromCurrentState(
-      static_cast<ParamID>(ParameterID::kSimpleMorphWeights), save_now);
+      static_cast<ParamID>(ParameterID::kSimpleMorphWeights), false);
+  if (save_now) {
+    ScheduleDeferredPresetSave();
+  }
 
   if (const auto message = Steinberg::owned(controller->allocateMessage())) {
     const auto vst_param_id =
@@ -1785,7 +2583,7 @@ void Editor::AddCurrentPreset() {
   RefreshPresetPanel(selected_preset_);
 }
 
-void Editor::CreateNewPreset() {
+void Editor::CreateNewPreset(const bool reset_state) {
   const auto number_default = [](const ParameterID id) -> double {
     return std::get<common::NumberParameter>(common::kSchema.GetParameter(id))
         .GetDefaultValue();
@@ -1828,9 +2626,16 @@ void Editor::CreateNewPreset() {
       .pitch_control = list_default(ParameterID::kLock),
       .pitch_correction_type = list_default(ParameterID::kPitchCorrectionType),
       .simple_morph_weights = default_weights.GetDefaultValue(),
+      .simple_morph_mode = false,
   });
   selected_preset_ = static_cast<int>(presets_.size()) - 1;
   active_preset_bank_ = preset_workspace_.selected_bank;
+
+  if (!reset_state) {
+    SavePresets();
+    RefreshPresetPanel(selected_preset_);
+    return;
+  }
 
   // The selected blank preset must match the live plug-in state. Unload the
   // previous model first: source-pitch updates from a loaded model can
@@ -1887,9 +2692,9 @@ void Editor::CreateNewPreset() {
   // derive a temporary pitch from the previous model state while resetting.
   reset_control(ParameterID::kPitchShift);
   auto* const controller = static_cast<Controller*>(getController());
-  controller->SetStringParameter(
+  static_cast<void>(controller->SetStringParameter(
       static_cast<ParamID>(ParameterID::kSimpleMorphWeights),
-      default_weights.GetDefaultValue());
+      default_weights.GetDefaultValue()));
   applying_preset_ = false;
 
   SavePresets();
@@ -2015,6 +2820,7 @@ void Editor::ApplyPreset(const int index) {
       ApplySimpleMorphWeights(weights, voice_count);
     }
   }
+  RefreshModelUiFromControllerState();
   applying_preset_ = false;
   UpdateCompensatedDriveUi();
   SavePresets();
@@ -2113,7 +2919,8 @@ void Editor::SavePresets() {
   const auto value = std::u8string(serialized.begin(), serialized.end());
   auto* const controller = static_cast<Controller*>(getController());
   const auto vst_param_id = static_cast<ParamID>(ParameterID::kPresetData);
-  controller->SetStringParameter(vst_param_id, value);
+  static_cast<void>(
+      controller->SetStringParameter(vst_param_id, value, this));
   if (const auto message = Steinberg::owned(controller->allocateMessage())) {
     message->setMessageID("param_change");
     message->getAttributes()->setBinary("param_id", &vst_param_id,
@@ -2532,6 +3339,7 @@ void Editor::SyncValue(const ParamID param_id, const float plain_value) {
   auto* const control = controls_.at(param_id);
   // Voice は色々ややこしいので特別扱いする
   if (param_id == static_cast<ParamID>(ParameterID::kVoice)) {
+    HidePortraitPopup();
     const auto voice_id = static_cast<int>(std::round(plain_value));
     control->setValue(plain_value);
     if (!model_config_.has_value()) {
@@ -2610,6 +3418,16 @@ void Editor::SyncStringValue(const ParamID param_id,
     SyncModelDescription();
     SyncSourcePitchRange();
     SyncParameterAvailability();
+    // A host may deliver the model path after the editor has been built.  If
+    // this is the one blank seed row created for a new workspace, register
+    // that model in the row just as the interactive file selector does.
+    if (!applying_preset_ && selected_preset_ >= 0 &&
+        selected_preset_ < static_cast<int>(presets_.size()) &&
+        presets_[selected_preset_].model_path.empty()) {
+      UpdateSelectedPresetFromCurrentState(
+          static_cast<ParamID>(ParameterID::kModel), false);
+      ScheduleDeferredPresetSave();
+    }
     if (rename_selected_preset_after_model_load_) {
       rename_selected_preset_after_model_load_ = false;
       if (RenameSelectedPresetFromCurrentModelVoice()) {
@@ -2671,6 +3489,7 @@ void Editor::SyncModelDescription() {
   SetModelDescriptionText(u8"");
   SetVoiceDescriptionText(u8"");
   SetPortraitDescriptionText(u8"");
+  HidePortraitPopup();
   if (portrait_view_) {
     portrait_view_->setBackground(nullptr);
     portrait_view_->setVisible(false);
@@ -2687,6 +3506,7 @@ void Editor::SyncModelDescription() {
   SetVoiceSelectorDisplay(-1);
   RebuildVoiceMenu();
   portraits_.clear();
+  portrait_popup_bitmaps_.clear();
   portrait_menu_thumbnails_.clear();
   portrait_marker_thumbnails_.clear();
   if (morph_pad_view_) {
@@ -2750,13 +3570,33 @@ void Editor::SyncModelDescription() {
             VSTGUI::owned(new CBitmap(platform_bitmap));
         auto rounded_portrait = MakeRoundedBitmap(
             original_bitmap.get(), kPortraitWidth, kPortraitHeight, 4.0);
+        auto popup_portrait = rounded_portrait;
+        const auto original_width = original_bitmap->getWidth();
+        const auto original_height = original_bitmap->getHeight();
+        if (original_width > layout::kPortraitSize &&
+            original_height > layout::kPortraitSize) {
+          const auto popup_scale = std::min(
+              1.0, layout::kPortraitPopupMaxSize /
+                       std::max(original_width, original_height));
+          const auto popup_width = static_cast<int>(
+              std::round(original_width * popup_scale));
+          const auto popup_height = static_cast<int>(
+              std::round(original_height * popup_scale));
+          popup_portrait = MakeRoundedBitmap(
+              original_bitmap.get(), popup_width, popup_height,
+              4.0 * static_cast<double>(popup_width) /
+                  layout::kPortraitSize);
+        }
         auto menu_thumbnail = ScaleBitmap(original_bitmap.get(), 42, 42);
         auto circular_thumbnail =
             MakeRoundedBitmap(original_bitmap.get(), 58, 58, 29.0);
-        if (!rounded_portrait || !menu_thumbnail || !circular_thumbnail) {
+        if (!rounded_portrait || !popup_portrait || !menu_thumbnail ||
+            !circular_thumbnail) {
           goto load_portrait_failed;
         }
         portraits_.insert({voice.portrait.path, rounded_portrait});
+        portrait_popup_bitmaps_.insert(
+            {voice.portrait.path, popup_portrait});
         portrait_menu_thumbnails_.insert({voice.portrait.path, menu_thumbnail});
         portrait_marker_thumbnails_.insert(
             {voice.portrait.path, circular_thumbnail});
@@ -2765,6 +3605,7 @@ void Editor::SyncModelDescription() {
       assert(false);
     load_portrait_failed:
       portraits_.insert({voice.portrait.path, nullptr});
+      portrait_popup_bitmaps_.insert({voice.portrait.path, nullptr});
       portrait_menu_thumbnails_.insert({voice.portrait.path, nullptr});
       portrait_marker_thumbnails_.insert({voice.portrait.path, nullptr});
     load_portrait_succeeded: {}
@@ -2776,6 +3617,7 @@ void Editor::SyncModelDescription() {
                              : VSTGUI::CMenuItem::kDisabled;
       voice_menu->addEntry("Voice Morphing Mode", -1, flags);
       portraits_.insert({u8"", nullptr});
+      portrait_popup_bitmaps_.insert({u8"", nullptr});
       portrait_menu_thumbnails_.insert({u8"", nullptr});
       portrait_marker_thumbnails_.insert({u8"", nullptr});
     }
@@ -2838,9 +3680,17 @@ void Editor::SyncModelDescription() {
       SetVoiceSelectorDisplay(-2);
       UpdateVoiceMorphingDescription();
     }
+    if (!applying_preset_ && selected_preset_ >= 0 &&
+        selected_preset_ < static_cast<int>(presets_.size()) &&
+        presets_[selected_preset_].model_path.empty()) {
+      UpdateSelectedPresetFromCurrentState(
+          static_cast<ParamID>(ParameterID::kModel), false);
+      ScheduleDeferredPresetSave();
+    }
     SetModelDescriptionText(model_config_->model.description);
     RebuildVoiceMenu();
 
+    model_selector->setDirty();
     portrait_view_->setDirty();
     if (portrait_description_pane_) {
       portrait_description_pane_->setDirty();
@@ -2856,6 +3706,23 @@ void Editor::SyncModelDescription() {
   }
 }
 
+void Editor::RefreshModelUiFromControllerState() {
+  auto* const controller = static_cast<Controller*>(getController());
+  const auto& model = *std::get<std::unique_ptr<std::u8string>>(
+      controller->core_.parameter_state_.GetValue(ParameterID::kModel));
+  auto* const model_control = static_cast<FileSelector*>(
+      controls_.at(static_cast<ParamID>(ParameterID::kModel)));
+  model_control->SetPath(model);
+  SyncModelDescription();
+  SyncSourcePitchRange();
+  SyncParameterAvailability();
+
+  const auto voice = std::get<int>(controller->core_.parameter_state_.GetValue(
+      ParameterID::kVoice));
+  SyncValue(static_cast<ParamID>(ParameterID::kVoice),
+            static_cast<float>(voice));
+}
+
 // GUI でパラメータに変更があったときに、DAW に伝える。
 // あとダブルクリックでデフォルトに戻したい。
 void Editor::valueChanged(CControl* const pControl) {
@@ -2866,6 +3733,31 @@ void Editor::valueChanged(CControl* const pControl) {
   if (const auto column = ColumnForView(pControl);
       column != FocusColumn::kNone) {
     SetFocusedColumn(column);
+  }
+  if (pControl == vst_output_device_menu_) {
+    SendVstDirectWasapiSelection();
+    return;
+  }
+  if (pControl == vst_exclusive_checkbox_) {
+    if (vst_output_device_menu_ &&
+        vst_output_device_menu_->getCurrentIndex() > 0) {
+      SendVstDirectWasapiSelection();
+    }
+    return;
+  }
+  if (pControl == vst_recording_mode_menu_) {
+    if (vst_recording_mode_menu_ != nullptr) {
+      vst_recording_mode_ = static_cast<common::RecordingMode>(
+          std::clamp(vst_recording_mode_menu_->getCurrentIndex(), 0, 3));
+      if (auto* const controller = static_cast<Controller*>(getController());
+          controller != nullptr) {
+        controller->SetRecordingSelection(vst_recording_mode_,
+                                          vst_recording_path_);
+        SendVstRecordingSelection();
+      }
+      UpdateVstRecordingControls();
+    }
+    return;
   }
   const auto vst_param_id = pControl->getTag();
   const auto param_id = static_cast<ParameterID>(vst_param_id);
@@ -2969,7 +3861,13 @@ void Editor::valueChanged(CControl* const pControl) {
       // editor. Arm the rename before entering that call.
       rename_selected_preset_after_model_load_ = true;
     }
-    controller->SetStringParameter(vst_param_id, file);
+    // The current editor updates its model-dependent views explicitly after
+    // the controller state changes.  Other open editors still receive the
+    // normal controller broadcast.  Avoid re-entering this editor through
+    // SetStringParameter while its model control is being changed.
+    static_cast<void>(controller->SetStringParameter(vst_param_id, file,
+                                                      this));
+    SyncStringValue(vst_param_id, file);
     // processor に通知
     if (const auto msg = Steinberg::owned(controller->allocateMessage())) {
       msg->setMessageID("param_change");
@@ -3006,12 +3904,11 @@ void Editor::valueChanged(CControl* const pControl) {
     }
   }
   core.updated_parameters_.clear();
-  const auto slider = dynamic_cast<Slider*>(pControl);
-  const auto defer_preset_save =
-      Slider::IsAnyMouseDragEditing() || (slider && slider->IsWheelEditing());
-  UpdateSelectedPresetFromCurrentState(static_cast<ParamID>(param_id),
-                                       !defer_preset_save);
-  if (slider && slider->IsWheelEditing()) {
+  const auto mouse_drag_editing = Slider::IsAnyMouseDragEditing();
+  UpdateSelectedPresetFromCurrentState(static_cast<ParamID>(param_id), false);
+  // Mouse drags schedule their single persistence pass from the mouse-up
+  // callback. Wheel, keyboard and discrete controls are coalesced here.
+  if (!mouse_drag_editing) {
     ScheduleDeferredPresetSave();
   }
 }

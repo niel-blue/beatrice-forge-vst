@@ -37,7 +37,9 @@ struct Preset {
   int pitch_correction_type = 0;
   std::u8string simple_morph_weights = u8"1";
   VoiceMorphState advanced_morph_state;
-  bool simple_morph_mode = true;
+  // true = SLIDER, false = 2D PAD.  Missing values in older preset data
+  // intentionally fall back to the default 2D PAD view.
+  bool simple_morph_mode = false;
 };
 
 struct PresetBank {

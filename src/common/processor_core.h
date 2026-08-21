@@ -33,12 +33,14 @@ class ProcessorCoreBase {
   [[nodiscard]] virtual auto GetVersion() const -> int = 0;
   [[nodiscard]] virtual auto GetLatencySamples() const -> int { return 0; }
   virtual auto ProcessWithoutConversion(const float* /*input*/,
-                                        float* /*output*/, int /*n_samples*/)
+                                        float* /*output*/, int /*n_samples*/,
+                                        float* /*pre_conversion*/ = nullptr)
       -> ErrorCode {
     return ErrorCode::kSuccess;
   }
   virtual auto Process(const float* input, float* output, int n_samples,
-                       float* output_right = nullptr) -> ErrorCode = 0;
+                       float* output_right = nullptr,
+                       float* pre_conversion = nullptr) -> ErrorCode = 0;
   virtual auto ProcessOutputEffectsTail(float* output, float* output_right,
                                         int n_samples) -> ErrorCode {
     std::memset(output, 0, sizeof(float) * n_samples);
@@ -166,7 +168,8 @@ class ProcessorCoreUnloaded : public ProcessorCoreBase {
   [[nodiscard]] auto GetVersion() const -> int override { return -1; }
   auto Process(const float* const /*input*/, float* const output,
                const int n_samples,
-               float* const output_right = nullptr) -> ErrorCode override {
+               float* const output_right = nullptr,
+               float* const /*pre_conversion*/ = nullptr) -> ErrorCode override {
     std::memset(output, 0, sizeof(float) * n_samples);
     if (output_right != nullptr) {
       std::memset(output_right, 0, sizeof(float) * n_samples);

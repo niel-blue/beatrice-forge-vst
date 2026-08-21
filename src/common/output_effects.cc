@@ -9,8 +9,12 @@
 namespace beatrice::common {
 namespace {
 
-constexpr auto kMudReduction = 0.75;
-constexpr auto kPresenceBoost = 0.55;
+// The controls are intended to remain gentle in their lower range while the
+// upper range must be clearly audible on an already-converted voice. At 100,
+// De-Mud cuts the centre of the 180-700 Hz band by roughly 12 dB and Presence
+// raises the upper voice band by roughly 5.5 dB at 48 kHz.
+constexpr auto kMudReduction = 1.30;
+constexpr auto kPresenceBoost = 1.15;
 constexpr auto kReverbWetGain = 0.70;
 constexpr auto kAllPassFeedback = 0.5F;
 constexpr auto kSignalThreshold = 1.0e-7;

@@ -119,7 +119,7 @@ void ReadPresetDocument(const toml::value& root, std::vector<Preset>& presets,
           .simple_morph_weights = ToU8String(toml::find_or<std::string>(
               entry, "simple_morph_weights", "1")),
           .simple_morph_mode =
-              toml::find_or<bool>(entry, "simple_morph_mode", true),
+              toml::find_or<bool>(entry, "simple_morph_mode", false),
       };
       auto& morph = preset.advanced_morph_state;
       morph.cursor_x = toml::find_or<float>(entry, "morph_cursor_x", morph.cursor_x);

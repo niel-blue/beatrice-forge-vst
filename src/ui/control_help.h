@@ -68,8 +68,25 @@ enum class ControlHelpID : std::uint16_t {
   kReverbDecay = 0x0811,
   kReverbTone = 0x0812,
 
+  // Standalone IN/OUT and recording controls.
+  kInputSource = 0x0900,
+  kInputDevice = 0x0901,
+  kOutputDevice = 0x0902,
+  kMonitorDevice = 0x0903,
+  kAudioFileBrowse = 0x0904,
+  kAudioFilePlayback = 0x0905,
+  kAudioFileVolume = 0x0906,
+  kAudioFileSeek = 0x0907,
+  kRecordingMode = 0x0908,
+  kRecording = 0x0909,
+  kRecordingBrowse = 0x090A,
+
+  // VST-only optional direct WASAPI output.
+  kVstOutputDevice = 0x0B00,
+  kVstWasapiExclusive = 0x0B01,
+
   // Reserved end marker.  Do not use this as an item ID.
-  kEnd = 0x0900,
+  kEnd = 0x0C00,
 };
 
 enum class ControlHelpSection : std::uint8_t {
@@ -81,6 +98,8 @@ enum class ControlHelpSection : std::uint8_t {
   kMorph,
   kPresets,
   kEffects,
+  kStandaloneInOut,
+  kVstInOut,
 };
 
 struct ControlHelpDefinition {
@@ -155,6 +174,32 @@ inline constexpr auto kControlHelpDefinitions =
          "reverb_decay"},
         {ControlHelpID::kReverbTone, ControlHelpSection::kEffects,
          "reverb_tone"},
+        {ControlHelpID::kInputSource, ControlHelpSection::kStandaloneInOut,
+         "input_source"},
+        {ControlHelpID::kInputDevice, ControlHelpSection::kStandaloneInOut,
+         "input_device"},
+        {ControlHelpID::kOutputDevice, ControlHelpSection::kStandaloneInOut,
+         "output_device"},
+        {ControlHelpID::kMonitorDevice,
+         ControlHelpSection::kStandaloneInOut, "monitor_device"},
+        {ControlHelpID::kAudioFileBrowse,
+         ControlHelpSection::kStandaloneInOut, "audio_file_browse"},
+        {ControlHelpID::kAudioFilePlayback,
+         ControlHelpSection::kStandaloneInOut, "audio_file_playback"},
+        {ControlHelpID::kAudioFileVolume,
+         ControlHelpSection::kStandaloneInOut, "audio_file_volume"},
+        {ControlHelpID::kAudioFileSeek,
+         ControlHelpSection::kStandaloneInOut, "audio_file_seek"},
+        {ControlHelpID::kRecordingMode,
+         ControlHelpSection::kStandaloneInOut, "recording_mode"},
+        {ControlHelpID::kRecording, ControlHelpSection::kStandaloneInOut,
+         "recording"},
+        {ControlHelpID::kRecordingBrowse,
+         ControlHelpSection::kStandaloneInOut, "recording_browse"},
+        {ControlHelpID::kVstOutputDevice, ControlHelpSection::kVstInOut,
+         "vst_output_device"},
+        {ControlHelpID::kVstWasapiExclusive, ControlHelpSection::kVstInOut,
+         "vst_wasapi_exclusive"},
     });
 
 [[nodiscard]] constexpr auto IsControlHelpID(const ControlHelpID id) -> bool {

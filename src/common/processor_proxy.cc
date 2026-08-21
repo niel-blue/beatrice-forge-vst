@@ -15,8 +15,8 @@
 
 namespace beatrice::common {
 
-auto ProcessorProxy::GetParameter(const ParameterID param_id) const -> const
-    auto& {
+auto ProcessorProxy::GetParameter(const ParameterID param_id) const
+    -> const ParameterState::Value& {
   return parameter_state_.GetValue(param_id);
 }
 

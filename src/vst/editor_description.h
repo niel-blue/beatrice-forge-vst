@@ -268,13 +268,35 @@ class DescriptionPane final : public SurfacePanel {
     title_label_->setDirty();
   }
 
+  // The standalone editor builds the shared view hierarchy before the frame
+  // is attached to its platform window. Recalculate after attachment so the
+  // CScrollView can use its final viewport and expose an overflowing body.
+  bool attached(CView* const parent) override {
+    const auto result = SurfacePanel::attached(parent);
+    if (result) {
+      RefreshScrollLayout();
+    }
+    return result;
+  }
+
+  // Keep the text layout and scrollbar state in sync when a host or a morph
+  // layout changes the description pane size after it has been created.
+  void setViewSize(const CRect& rect, const bool invalid = true) override {
+    const auto previous = getViewSize();
+    SurfacePanel::setViewSize(rect, invalid);
+    if (scroll_ && (previous.getWidth() != rect.getWidth() ||
+                    previous.getHeight() != rect.getHeight())) {
+      RefreshScrollLayout();
+    }
+  }
+
   // 本文が変わった場合だけ折り返しを更新する。
   void SetText(const std::u8string& text) {
     if (text_ == text) {
       return;
     }
     text_ = text;
-    SetScrollableDescription(scroll_, label_, text_);
+    RefreshScrollLayout();
     invalid();
   }
 
@@ -311,17 +333,25 @@ class DescriptionPane final : public SurfacePanel {
   CScrollView* scroll_ = nullptr;
   DescriptionTextLabel* label_ = nullptr;
   bool body_visible_ = true;
+
+  void RefreshScrollLayout() {
+    SetScrollableDescription(scroll_, label_, text_);
+  }
 };
 
 class DescriptionPopupView final : public CViewContainer {
  public:
+  using DismissAction = std::function<void()>;
+
   // DESCRIPTION の拡大表示に使うポップアップを生成する。
   DescriptionPopupView(const CRect& rect,
                        const SharedPointer<SurfaceBitmap>& panel_texture,
                        const CColor& border, CCoord radius, CFontRef title_font,
                        CFontRef body_font,
-                       DescriptionTextLabel::OpenUrlAction open_url)
-      : CViewContainer(rect) {
+                       DescriptionTextLabel::OpenUrlAction open_url,
+                       DismissAction dismiss_action = {})
+      : CViewContainer(rect),
+        dismiss_action_(std::move(dismiss_action)) {
     setBackgroundColor(kTransparentCColor);
     setTransparency(true);
 
@@ -358,7 +388,7 @@ class DescriptionPopupView final : public CViewContainer {
     text_->setStyle(CParamDisplay::kNoFrame);
     text_->setHoriAlign(CHoriTxtAlign::kLeftText);
     text_->setLineLayout(CMultiLineTextLabel::LineLayout::clip);
-    text_->SetNonLinkClickAction([this]() { Hide(); });
+    text_->SetNonLinkClickAction([this]() { Dismiss(); });
     scroll_->addView(text_);
 
     setVisible(false);
@@ -368,14 +398,14 @@ class DescriptionPopupView final : public CViewContainer {
   void onMouseDownEvent(VSTGUI::MouseDownEvent& event) override {
     if (event.buttonState.isLeft() &&
         !panel_->getMouseableArea().pointInside(event.mousePosition)) {
-      Hide();
+      Dismiss();
       event.consumed = true;
       event.ignoreFollowUpMoveAndUpEvents(true);
       return;
     }
     CViewContainer::onMouseDownEvent(event);
     if (event.buttonState.isLeft() && !event.consumed) {
-      Hide();
+      Dismiss();
       event.consumed = true;
       event.ignoreFollowUpMoveAndUpEvents(true);
     }
@@ -426,12 +456,20 @@ class DescriptionPopupView final : public CViewContainer {
   }
 
  private:
+  void Dismiss() {
+    Hide();
+    if (dismiss_action_) {
+      dismiss_action_();
+    }
+  }
+
   SurfacePanel* panel_ = nullptr;
   SurfacePanel* body_frame_ = nullptr;
   CTextLabel* title_ = nullptr;
   CScrollView* scroll_ = nullptr;
   DescriptionTextLabel* text_ = nullptr;
   DescriptionTarget target_ = DescriptionTarget::kModel;
+  DismissAction dismiss_action_;
 };
 
 }  // namespace beatrice::vst

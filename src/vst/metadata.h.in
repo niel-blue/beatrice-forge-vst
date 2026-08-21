@@ -4,25 +4,27 @@
 #define BEATRICE_VST_METADATA_H_
 
 // clang-format off
-#define MAJOR_VERSION          @major_version@
-#define MINOR_VERSION          @minor_version@
-#define PATCH_VERSION          @patch_version@
+#define MAJOR_VERSION          @FORGE_VERSION_MAJOR@
+#define MINOR_VERSION          @FORGE_VERSION_MINOR@
+#define PATCH_VERSION          @FORGE_VERSION_PATCH@
 #define BUILD_NUMBER           @build_number@
 #define INTEGER_VERSION        MAJOR_VERSION, MINOR_VERSION, PATCH_VERSION, BUILD_NUMBER
-#define FULL_VERSION_STR       "@full_version_str@"
+#define FULL_VERSION_STR       "@FORGE_FULL_VERSION_STR@"
+#define BASE_VERSION_STR       "@BEATRICE_BASE_VERSION@"
 
-#define stringPluginName       "Beatrice_" FULL_VERSION_STR
-#define stringOriginalFilename "beatrice_" FULL_VERSION_STR ".vst3"
+#define stringPluginName       "@BEATRICE_PRODUCT_NAME@ " FULL_VERSION_STR
+#define stringOriginalFilename "@BEATRICE_PRODUCT_SLUG@_" FULL_VERSION_STR ".vst3"
 #if SMTG_PLATFORM_64
-#define stringFileDescription  stringPluginName " VST3-SDK (64Bit)"
+#define stringFileDescription  stringPluginName " (64Bit)"
 #else
-#define stringFileDescription  stringPluginName " VST3-SDK"
+#define stringFileDescription  stringPluginName
 #endif
-#define stringCompanyWeb       "prj-beatrice.com"
-#define stringCompanyEmail     "167534685+prj-beatrice@users.noreply.github.com"
-#define stringCompanyName      "Project Beatrice"
-#define stringLegalCopyright   "Copyright 2022-2026 Project Beatrice and Contributors"
+#define stringCompanyWeb       ""
+#define stringCompanyEmail     ""
+#define stringCompanyName      "@BEATRICE_AUTHOR_NAME@"
+#define stringLegalCopyright   "Copyright 2022-2026 Project Beatrice and Contributors; modifications by @BEATRICE_AUTHOR_NAME@"
 #define stringLegalTrademarks  "VST is a trademark of Steinberg Media Technologies GmbH"
+#define stringProductComment   "Based on Project Beatrice " BASE_VERSION_STR
 
 #define BACKGROUND_IMAGE       "@background_image@"
 // clang-format on

@@ -11,11 +11,13 @@
 
 #include "vst3sdk/pluginterfaces/vst/ivstparameterchanges.h"
 #include "vst3sdk/pluginterfaces/vst/vstspeaker.h"
+#include "vst3sdk/pluginterfaces/base/smartpointer.h"
 
 // Beatrice
 #include "common/error.h"
 #include "common/parameter_schema.h"
 #include "vst/parameter.h"
+#include "vst/plugin_state.h"
 
 #ifdef BEATRICE_ONLY_FOR_LINTER_DO_NOT_COMPILE_WITH_THIS
 #include "vst/metadata.h.in"
@@ -32,9 +34,19 @@ using Steinberg::kResultTrue;
 namespace SpeakerArr = Steinberg::Vst::SpeakerArr;
 
 // コンストラクタ
-Processor::Processor() : vc_core_(common::kSchema) {
+Processor::Processor()
+    : audio_engine_(common::kSchema),
+      direct_wasapi_output_([this](const DirectWasapiStatus status,
+                                   const std::string& error) {
+        SendDirectWasapiStatusMessage(status, error);
+      }) {
   // 対応するコントローラクラスを設定する
   setControllerClass(kControllerUID);
+}
+
+Processor::~Processor() {
+  recorder_.Stop();
+  direct_wasapi_output_.Stop();
 }
 
 // "Initialized" の状態に遷移する
@@ -82,37 +94,49 @@ auto PLUGIN_API Processor::setupProcessing(ProcessSetup& setup) -> tresult {
   if (setup.symbolicSampleSize == Steinberg::Vst::kSample64) {
     return kResultFalse;
   }
-  const auto error_code = vc_core_.SetSampleRate(setup.sampleRate);
+  const auto error_code =
+      audio_engine_.Prepare(setup.sampleRate, setup.maxSamplesPerBlock);
   assert(error_code == common::ErrorCode::kSuccess);
-  dry_buffer_.assign(setup.maxSamplesPerBlock, 0.0F);
-  bypass_buffer_.assign(setup.maxSamplesPerBlock, 0.0F);
-  const auto fade_samples = std::max(1.0, setup.sampleRate * 0.04);
-  bypass_mix_step_ = static_cast<float>(1.0 / fade_samples);
-  bypass_mix_ = 0.0F;
+  meter_sample_rate_ = setup.sampleRate;
+  meter_frames_ = 0;
+  meter_input_peak_ = 0.0F;
+  meter_output_peak_ = 0.0F;
+  input_meter_buffer_.assign(
+      static_cast<std::size_t>(std::max(0, setup.maxSamplesPerBlock)), 0.0F);
+  if (direct_wasapi_config_.has_value()) {
+    direct_wasapi_config_->source_sample_rate = setup.sampleRate;
+    direct_wasapi_output_.Start(*direct_wasapi_config_);
+  }
   return AudioEffect::setupProcessing(setup);
 }
 
 auto PLUGIN_API Processor::setActive(const TBool state) -> tresult {
   if (state) {
-    // メモリの確保など
+    if (direct_wasapi_config_.has_value() && meter_sample_rate_ > 0.0) {
+      direct_wasapi_config_->source_sample_rate = meter_sample_rate_;
+      direct_wasapi_output_.Start(*direct_wasapi_config_);
+    }
   } else {
+    recorder_.Stop();
+    SendRecordingStatusMessage();
+    direct_wasapi_output_.Stop();
     // メモリの解放など
     std::lock_guard<std::mutex> lock(mtx_);
-    const auto error_code = vc_core_.GetCore()->ResetContext();
+    const auto error_code = audio_engine_.ResetContext();
     assert(error_code == common::ErrorCode::kSuccess);
+    meter_frames_ = 0;
+    meter_input_peak_ = 0.0F;
+    meter_output_peak_ = 0.0F;
   }
   return AudioEffect::setActive(state);
 }
 
 auto PLUGIN_API Processor::getLatencySamples() -> uint32 {
   std::lock_guard<std::mutex> lock(mtx_);
-  const auto latency_reporting = std::get<int>(
-      vc_core_.GetParameterState().GetValue(
-          common::ParameterID::kLatencyReporting));
-  if (latency_reporting == 0) {
+  if (!audio_engine_.IsLatencyReportingEnabled()) {
     return 0;
   }
-  return static_cast<uint32>(vc_core_.GetCore()->GetLatencySamples());
+  return static_cast<uint32>(audio_engine_.GetLatencySamples());
 }
 
 // TODO(bug): tail を設定する
@@ -165,15 +189,15 @@ auto PLUGIN_API Processor::process(ProcessData& data) -> tresult {
             std::get_if<common::NumberParameter>(&param)) {
       const auto denormalized_value = Denormalize(*num_param, value);
       const auto error_code =
-          vc_core_.SetParameter(param_id, denormalized_value);
+          audio_engine_.SetParameter(param_id, denormalized_value);
       assert(error_code == common::ErrorCode::kSuccess);
       assert(denormalized_value ==
-             std::get<double>(vc_core_.GetParameterState().GetValue(param_id)));
+             std::get<double>(audio_engine_.GetParameter(param_id)));
     } else if (const auto* const list_param =
                    std::get_if<common::ListParameter>(&param)) {
       const auto denormalized_value = Denormalize(*list_param, value);
       const auto error_code =
-          vc_core_.SetParameter(param_id, denormalized_value);
+          audio_engine_.SetParameter(param_id, denormalized_value);
       assert(error_code == common::ErrorCode::kSuccess);
     }
   }
@@ -203,122 +227,122 @@ auto PLUGIN_API Processor::process(ProcessData& data) -> tresult {
   float* const out1 = data.outputs[0].numChannels >= 2
                           ? data.outputs[0].channelBuffers32[1]
                           : nullptr;
-  if (dry_buffer_.size() < data.numSamples ||
-      bypass_buffer_.size() < data.numSamples) {
-    std::memset(out0, 0, data.numSamples * sizeof(float));
-    if (out1 != nullptr) {
-      std::memset(out1, 0, data.numSamples * sizeof(float));
-    }
-    data.outputs[0].silenceFlags = 1U;
-    return kResultTrue;
-  }
   const float* const in1 = data.inputs[0].numChannels >= 2
                                ? data.inputs[0].channelBuffers32[1]
                                : nullptr;
   const auto host_input_silent = data.inputs[0].silenceFlags != 0;
-  for (auto i = 0; i < data.numSamples; ++i) {
-    auto mono = host_input_silent ? 0.0F : in0[i];
-    if (!host_input_silent && in1 != nullptr) {
-      mono = (mono + in1[i]) * 0.5F;
-    }
-    dry_buffer_[i] = mono;
-    out0[i] = mono;
-  }
-
-  // サイレンスフラグの確認
-  // Reverb tails must continue after the host marks its input silent.
-
-  // 無音チェック
-  auto input_silent = host_input_silent;
-  if (!input_silent) {
-    input_silent = true;
-    for (auto i = 0; i < data.numSamples; ++i) {
-      if (out0[i] != 0.0F) {
-        input_silent = false;
-        break;
-      }
-    }
-  }
-  // TODO(bug): 遅延させる
-  const auto bypass = std::get<int>(vc_core_.GetParameterState().GetValue(
-                         common::ParameterID::kBypass)) != 0;
-  const auto needs_wet = !bypass || bypass_mix_ < 0.999F;
-  if (bypass) {
-    std::memcpy(bypass_buffer_.data(), dry_buffer_.data(),
-                data.numSamples * sizeof(float));
-    if (!input_silent) {
-      [[maybe_unused]] const auto error_code =
-          vc_core_.GetCore()->ProcessWithoutConversion(
-              bypass_buffer_.data(), bypass_buffer_.data(), data.numSamples);
-    }
-  }
-  auto wet_active = false;
-  if (needs_wet) {
-    // VC
-    if (!input_silent) {
-      [[maybe_unused]] const auto error_code =
-          vc_core_.GetCore()->Process(out0, out0, data.numSamples, out1);
-      wet_active = true;
-    } else if (vc_core_.GetCore()->HasOutputEffectsTail()) {
-      [[maybe_unused]] const auto error_code =
-          vc_core_.GetCore()->ProcessOutputEffectsTail(
-              out0, out1, data.numSamples);
-      wet_active = true;
-    } else {
-      std::memset(out0, 0, data.numSamples * sizeof(float));
-      if (out1 != nullptr) {
-        std::memset(out1, 0, data.numSamples * sizeof(float));
-      }
-    }
-    // TODO(bug): error_code に基づいてサイレンスフラグを立てる
-  }
-
-  // 出力がステレオなら複製する
-  if (!needs_wet) {
-    vc_core_.GetCore()->DiscardOutputEffectsTail();
-    std::memcpy(out0, bypass_buffer_.data(),
-                data.numSamples * sizeof(float));
-    if (out1 != nullptr) {
-      std::memcpy(out1, bypass_buffer_.data(),
-                  data.numSamples * sizeof(float));
-    }
-  }
-
-  const auto target_mix = bypass ? 1.0F : 0.0F;
-  for (auto i = 0; i < data.numSamples; ++i) {
-    bypass_mix_ += std::clamp(target_mix - bypass_mix_, -bypass_mix_step_,
-                              bypass_mix_step_);
-    const auto wet_left = wet_active ? out0[i] : 0.0F;
-    const auto wet_right =
-        out1 != nullptr ? (wet_active ? out1[i] : 0.0F) : wet_left;
-    const auto dry = bypass ? bypass_buffer_[i] : dry_buffer_[i];
-    out0[i] = wet_left * (1.0F - bypass_mix_) + dry * bypass_mix_;
-    if (out1 != nullptr) {
-      out1[i] = wet_right * (1.0F - bypass_mix_) + dry * bypass_mix_;
-    }
-  }
-
-  auto output_silent = true;
-  for (auto i = 0; i < data.numSamples; ++i) {
-    if (out0[i] != 0.0F || (out1 != nullptr && out1[i] != 0.0F)) {
-      output_silent = false;
-      break;
-    }
-  }
+  const auto process_result = audio_engine_.Process(
+      {.input_left = in0,
+       .input_right = in1,
+       .output_left = out0,
+       .output_right = out1,
+       .pre_conversion = input_meter_buffer_.data(),
+       .num_samples = data.numSamples,
+       .input_silent = host_input_silent});
   data.outputs[0].silenceFlags =
-      output_silent
+      process_result.output_silent
           ? (static_cast<Steinberg::uint64>(1U)
              << data.outputs[0].numChannels) - 1U
           : 0U;
 
+  auto block_output_peak = 0.0F;
+  for (auto i = 0; i < data.numSamples; ++i) {
+    block_output_peak = std::max(block_output_peak, std::abs(out0[i]));
+    if (out1 != nullptr) {
+      block_output_peak = std::max(block_output_peak, std::abs(out1[i]));
+    }
+  }
+  auto block_input_peak = 0.0F;
+  if (!host_input_silent &&
+      process_result.error == common::ErrorCode::kSuccess) {
+    for (auto i = 0; i < data.numSamples; ++i) {
+      block_input_peak =
+          std::max(block_input_peak, std::abs(input_meter_buffer_[i]));
+    }
+  }
+  meter_input_peak_ = std::max(meter_input_peak_, block_input_peak);
+  meter_output_peak_ = std::max(meter_output_peak_, block_output_peak);
+  // The optional WASAPI path receives a copy of the processed signal. Host
+  // output buffers remain untouched and continue to be the normal VST output.
+  direct_wasapi_output_.PushBlock(
+      out0, out1, static_cast<std::size_t>(data.numSamples));
+  if (recorder_.IsRecording()) {
+    for (auto i = 0; i < data.numSamples; ++i) {
+      recorder_.Push(input_meter_buffer_[i], out0[i],
+                     out1 != nullptr ? out1[i] : out0[i]);
+    }
+  }
+  meter_frames_ += data.numSamples;
+  const auto meter_interval = std::max<std::int64_t>(
+      1, static_cast<std::int64_t>(std::llround(meter_sample_rate_ * 0.05)));
+  if (meter_frames_ >= meter_interval) {
+    SendAudioLevelMessage();
+    SendRecordingStatusMessage();
+    meter_frames_ = 0;
+    meter_input_peak_ = 0.0F;
+    meter_output_peak_ = 0.0F;
+  }
+
   return kResultOk;
+}
+
+void Processor::SendRecordingStatusMessage() {
+  if (const auto message = Steinberg::owned(allocateMessage())) {
+    message->setMessageID("recording_status");
+    const auto status = recorder_.GetStatus();
+    if (auto* const attributes = message->getAttributes();
+        attributes != nullptr) {
+      static_cast<void>(attributes->setInt(
+          "recording", status.recording ? 1 : 0));
+      static_cast<void>(attributes->setInt(
+          "frames", static_cast<Steinberg::int64>(status.frames)));
+      static_cast<void>(attributes->setInt(
+          "dropped_frames",
+          static_cast<Steinberg::int64>(status.dropped_frames)));
+      if (!status.error.empty()) {
+        static_cast<void>(attributes->setBinary(
+            "error", status.error.data(),
+            static_cast<Steinberg::uint32>(status.error.size())));
+      }
+      static_cast<void>(sendMessage(message));
+    }
+  }
+}
+
+void Processor::SendAudioLevelMessage() {
+  if (const auto message = Steinberg::owned(allocateMessage())) {
+    message->setMessageID("audio_levels");
+    if (auto* const attributes = message->getAttributes();
+        attributes != nullptr) {
+      static_cast<void>(attributes->setFloat("input_peak", meter_input_peak_));
+      static_cast<void>(
+          attributes->setFloat("output_peak", meter_output_peak_));
+      static_cast<void>(sendMessage(message));
+    }
+  }
+}
+
+void Processor::SendDirectWasapiStatusMessage(
+    const DirectWasapiStatus status, const std::string& error) {
+  if (const auto message = Steinberg::owned(allocateMessage())) {
+    message->setMessageID("direct_wasapi_status");
+    if (auto* const attributes = message->getAttributes();
+        attributes != nullptr) {
+      static_cast<void>(attributes->setInt(
+          "status", static_cast<Steinberg::int64>(status)));
+      if (!error.empty()) {
+        static_cast<void>(attributes->setBinary(
+            "error", error.data(), static_cast<Steinberg::uint32>(error.size())));
+      }
+      static_cast<void>(sendMessage(message));
+    }
+  }
 }
 
 // プロジェクトやプリセットをロードした時に呼ばれる。
 // kResultFalse を返した場合、StudioRack などでは
 // Controller::setComponentState が呼ばれなくなるため注意が必要。
 auto PLUGIN_API Processor::setState(IBStream* const state) -> tresult {
-  std::lock_guard<std::mutex> lock(mtx_);
   int siz;
   if (state->read(&siz, sizeof(siz)) != kResultTrue) {
     return kResultFalse;
@@ -328,27 +352,81 @@ auto PLUGIN_API Processor::setState(IBStream* const state) -> tresult {
   if (state->read(std::to_address(state_string.begin()), siz) != kResultTrue) {
     return kResultFalse;
   }
-  auto iss = std::istringstream(state_string, std::ios::binary);
+  auto parameter_state = std::string{};
+  auto ui_state = PersistedPluginUiState{};
+  if (!DecodePluginState(state_string, parameter_state, ui_state)) {
+    return kResultFalse;
+  }
+
+  auto restored_direct_wasapi = std::optional<DirectWasapiConfig>{};
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    auto iss = std::istringstream(parameter_state, std::ios::binary);
   // Controller 側の状態との整合性を維持するため、
   // Controller 側や Host から送られた設定値は、たとえ不正なものでも
   // なるべくそのまま保持する。
-  [[maybe_unused]] const auto error_code = vc_core_.Read(iss);
+  [[maybe_unused]] const auto error_code =
+      audio_engine_.ReadState(iss);
+    recording_mode_ = ui_state.recording_mode;
+    recording_path_ = ui_state.recording_path;
+    direct_wasapi_config_.reset();
+    if (ui_state.direct_wasapi_enabled &&
+        !ui_state.direct_wasapi_device_id.empty()) {
+      DirectWasapiConfig config;
+      config.device_id = ui_state.direct_wasapi_device_id;
+      config.mode = ui_state.direct_wasapi_exclusive
+                        ? DirectWasapiMode::kExclusive
+                        : DirectWasapiMode::kShared;
+      config.source_sample_rate = meter_sample_rate_;
+      direct_wasapi_config_ = config;
+      restored_direct_wasapi = config;
+    }
+  }
+
+  // Runtime activity is deliberately not part of the saved state. Loading a
+  // project must never start recording by itself.
+  recorder_.Stop();
+  SendRecordingStatusMessage();
+  if (restored_direct_wasapi.has_value() &&
+      restored_direct_wasapi->source_sample_rate > 0.0) {
+    direct_wasapi_output_.Start(*restored_direct_wasapi);
+  } else {
+    direct_wasapi_output_.Stop();
+  }
   return kResultTrue;
 }
 
 auto PLUGIN_API Processor::getState(IBStream* const state) -> tresult {
-  std::lock_guard<std::mutex> lock(mtx_);
-  auto oss = std::ostringstream(std::ios::binary);
-  if (vc_core_.Write(oss) != common::ErrorCode::kSuccess) {
+  auto parameter_state = std::string{};
+  auto ui_state = PersistedPluginUiState{};
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    auto oss = std::ostringstream(std::ios::binary);
+    if (audio_engine_.WriteState(oss) != common::ErrorCode::kSuccess) {
+      return kResultFalse;
+    }
+    parameter_state = oss.str();
+    if (direct_wasapi_config_.has_value() &&
+        !direct_wasapi_config_->device_id.empty()) {
+      ui_state.direct_wasapi_enabled = true;
+      ui_state.direct_wasapi_exclusive =
+          direct_wasapi_config_->mode == DirectWasapiMode::kExclusive;
+      ui_state.direct_wasapi_device_id = direct_wasapi_config_->device_id;
+    }
+    ui_state.recording_mode = recording_mode_;
+    ui_state.recording_path = recording_path_;
+  }
+
+  auto state_string = EncodePluginState(parameter_state, ui_state);
+  if (!state_string.has_value()) {
     return kResultFalse;
   }
-  auto state_string = oss.str();
-  auto siz = static_cast<int>(state_string.size());
+  auto siz = static_cast<int>(state_string->size());
   if (state->write(&siz, sizeof(siz)) != kResultTrue) {
     return kResultFalse;
   }
-  if (state->write(state_string.data(),
-                   static_cast<int>(state_string.size())) != kResultTrue) {
+  if (state->write(state_string->data(),
+                   static_cast<int>(state_string->size())) != kResultTrue) {
     return kResultFalse;
   }
   return kResultTrue;
@@ -356,6 +434,122 @@ auto PLUGIN_API Processor::getState(IBStream* const state) -> tresult {
 
 auto PLUGIN_API Processor::notify(IMessage* const message) -> tresult {
   const auto* const message_id = message->getMessageID();
+  if (std::strcmp(message_id, "recording_stop") == 0) {
+    recorder_.Stop();
+    SendRecordingStatusMessage();
+    return kResultTrue;
+  }
+  if (std::strcmp(message_id, "recording_start") == 0) {
+    auto* const attributes = message->getAttributes();
+    if (attributes == nullptr) {
+      return kResultFalse;
+    }
+    Steinberg::int64 mode_value = 0;
+    Steinberg::uint32 path_size = 0;
+    const void* path_data = nullptr;
+    if (attributes->getInt("mode", mode_value) != kResultTrue ||
+        attributes->getBinary("base_path", path_data, path_size) !=
+            kResultTrue ||
+        path_data == nullptr || path_size == 0 || mode_value < 1 ||
+        mode_value > 3) {
+      return kResultFalse;
+    }
+    auto sample_rate = 0.0;
+    {
+      std::lock_guard<std::mutex> lock(mtx_);
+      sample_rate = meter_sample_rate_;
+    }
+    common::RecordingSettings settings;
+    settings.mode = static_cast<common::RecordingMode>(mode_value);
+    const auto* const path_begin = static_cast<const char*>(path_data);
+    const auto path_utf8 = std::u8string(
+        reinterpret_cast<const char8_t*>(path_begin),
+        reinterpret_cast<const char8_t*>(path_begin + path_size));
+    settings.base_path = std::filesystem::path(path_utf8);
+    settings.sample_rate = sample_rate;
+    {
+      std::lock_guard<std::mutex> lock(mtx_);
+      recording_mode_ = settings.mode;
+      recording_path_ = settings.base_path;
+    }
+    if (!recorder_.Start(settings)) {
+      SendRecordingStatusMessage();
+      return kResultTrue;
+    }
+    SendRecordingStatusMessage();
+    return kResultTrue;
+  }
+  if (std::strcmp(message_id, "recording_selection") == 0) {
+    auto* const attributes = message->getAttributes();
+    if (attributes == nullptr) {
+      return kResultFalse;
+    }
+    Steinberg::int64 mode_value = 0;
+    if (attributes->getInt("mode", mode_value) != kResultTrue ||
+        mode_value < 0 || mode_value > 3) {
+      return kResultFalse;
+    }
+    auto path = std::filesystem::path{};
+    Steinberg::uint32 path_size = 0;
+    const void* path_data = nullptr;
+    if (attributes->getBinary("base_path", path_data, path_size) ==
+            kResultTrue &&
+        path_size != 0) {
+      if (path_data == nullptr) {
+        return kResultFalse;
+      }
+      const auto* const path_begin = static_cast<const char*>(path_data);
+      const auto path_utf8 = std::u8string(
+          reinterpret_cast<const char8_t*>(path_begin),
+          reinterpret_cast<const char8_t*>(path_begin + path_size));
+      path = std::filesystem::path(path_utf8);
+    }
+    {
+      std::lock_guard<std::mutex> lock(mtx_);
+      recording_mode_ = static_cast<common::RecordingMode>(mode_value);
+      recording_path_ = std::move(path);
+    }
+    return kResultTrue;
+  }
+  if (std::strcmp(message_id, "direct_wasapi_off") == 0) {
+    {
+      std::lock_guard<std::mutex> lock(mtx_);
+      direct_wasapi_config_.reset();
+    }
+    direct_wasapi_output_.Stop();
+    return kResultTrue;
+  }
+  if (std::strcmp(message_id, "direct_wasapi_config") == 0) {
+    auto* const attributes = message->getAttributes();
+    if (attributes == nullptr) {
+      return kResultFalse;
+    }
+    uint32 size = 0;
+    const void* data = nullptr;
+    Steinberg::int64 exclusive = 0;
+    if (attributes->getBinary("device_id", data, size) != kResultTrue ||
+        data == nullptr || size == 0 ||
+        attributes->getInt("exclusive", exclusive) != kResultTrue) {
+      return kResultFalse;
+    }
+    DirectWasapiConfig config;
+    config.device_id.assign(static_cast<const char*>(data), size);
+    config.mode = exclusive != 0 ? DirectWasapiMode::kExclusive
+                                 : DirectWasapiMode::kShared;
+    {
+      std::lock_guard<std::mutex> lock(mtx_);
+      config.source_sample_rate = meter_sample_rate_;
+      direct_wasapi_config_ = config;
+    }
+    if (config.source_sample_rate <= 0.0) {
+      SendDirectWasapiStatusMessage(
+          DirectWasapiStatus::kUnavailable,
+          "The host sample rate is not available yet.");
+      return kResultTrue;
+    }
+    direct_wasapi_output_.Start(config);
+    return kResultTrue;
+  }
   if (std::strcmp(message_id, "param_change") == 0) {
     uint32 siz;
     const void* data;
@@ -377,7 +571,7 @@ auto PLUGIN_API Processor::notify(IMessage* const message) -> tresult {
       {
         std::lock_guard<std::mutex> lock(mtx_);
         [[maybe_unused]] const auto error_code =
-            vc_core_.SetParameter(param_id, static_cast<int>(value));
+            audio_engine_.SetParameter(param_id, static_cast<int>(value));
       }
       sendMessageID("latency_changed");
       return kResultTrue;
@@ -394,7 +588,7 @@ auto PLUGIN_API Processor::notify(IMessage* const message) -> tresult {
     {
       std::lock_guard<std::mutex> lock(mtx_);
       [[maybe_unused]] const auto error_code =
-          vc_core_.SetParameter(param_id, value);
+          audio_engine_.SetParameter(param_id, value);
     }
     if (param_id == common::ParameterID::kModel) {
       sendMessageID("latency_changed");

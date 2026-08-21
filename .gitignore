@@ -1,3 +1,10 @@
-build
+build/
+.vs/
+.codex-remote-attachments/
+*.obj
 *.lib
 *.a
+
+# Local-only source archives and design work
+third_party/ASIO-SDK_*.zip
+Logowork/

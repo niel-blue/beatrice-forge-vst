@@ -90,7 +90,7 @@ class SimpleMorphPanel final : public SurfacePanel, public IControlListener {
       slider->setMax(100.0f);
       slider->setWheelInc(1.0f);
       slider->setFineWheelInc(1.0f);
-      slider->SetWheelEditingEnabled(true);
+      slider->SetWheelEditingEnabled(false);
       slider->setValue(weights_[i] * 100.0f);
       slider->SetFocusChangedAction(focus_changed_);
       slider->SetDragFinishedAction(edit_finished_);

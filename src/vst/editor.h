@@ -3,10 +3,10 @@
 #ifndef BEATRICE_VST_EDITOR_H_
 #define BEATRICE_VST_EDITOR_H_
 
-#include <array>
 #include <map>
 #include <memory>
 #include <optional>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -20,6 +20,8 @@
 
 // Beatrice
 #include "common/model_config.h"
+#include "common/audio_recorder.h"
+#include "common/recording_paths.h"
 #include "common/preset.h"
 #include "common/simple_morph.h"
 #include "common/voice_morph_state.h"
@@ -41,10 +43,13 @@ class MorphPadController;
 class MorphPadView;
 class SimpleMorphPanel;
 class PresetPanel;
+class PortraitPopupView;
 class VoiceMenuOverlayView;
 class VoiceSelectorView;
 class SurfacePanel;
+class VerticalScrollView;
 class GlowingActionLabel;
+class LevelIndicator;
 
 // NOLINTNEXTLINE(misc-multiple-inheritance)
 class Editor : public Steinberg::Vst::VSTGUIEditor, public IControlListener {
@@ -59,16 +64,25 @@ class Editor : public Steinberg::Vst::VSTGUIEditor, public IControlListener {
   ~Editor() SMTG_OVERRIDE;
   auto PLUGIN_API open(void* parent, const PlatformType& platformType)
       -> bool SMTG_OVERRIDE;
+  auto CreateStandaloneFrame(VSTGUI::CCoord width)
+      -> VSTGUI::SharedPointer<VSTGUI::CFrame>;
+  [[nodiscard]] auto GetStandaloneInOutPage() const -> SurfacePanel* {
+    return standalone_inout_panel_;
+  }
   void PLUGIN_API close() SMTG_OVERRIDE;
   void beginEdit(Steinberg::int32 index) SMTG_OVERRIDE;
   void endEdit(Steinberg::int32 index) SMTG_OVERRIDE;
   void SyncValue(ParamID param_id, float plain_value);
   void SyncStringValue(ParamID param_id, const std::u8string& value);
+  void SetAudioLevels(float input_peak, float output_peak);
+  void SyncVstExternalState();
   void valueChanged(CControl* pControl) SMTG_OVERRIDE;
   // auto notify(CBaseObject* sender,
   //                       const char* message) -> CMessageResult SMTG_OVERRIDE;
 
  private:
+  auto BuildFrame(void* parent, bool attach_to_platform,
+                  VSTGUI::CCoord width) -> bool;
   enum class FocusColumn { kNone, kSettings, kVoice, kPresets };
   static constexpr auto kPortraitWidth = static_cast<int>(layout::kPortraitSize);
   static constexpr auto kPortraitHeight = kPortraitWidth;
@@ -77,12 +91,18 @@ class Editor : public Steinberg::Vst::VSTGUIEditor, public IControlListener {
   void UpdateCompensatedDriveUi();
   void UpdateBypassUi(bool bypassed);
   void SyncModelDescription();
+  // Rebuild the model-dependent controls from the controller state after a
+  // preset has finished applying.  Some controls legitimately skip their
+  // listener when the requested value already matches the stored value, but
+  // the model-dependent presentation still needs to be refreshed.
+  void RefreshModelUiFromControllerState();
   void SyncParameterAvailability();
-  void SelectPage(int page);
   void SetPortraitDescriptionText(const std::u8string& text);
   void SetModelDescriptionText(const std::u8string& text);
   void SetVoiceDescriptionText(const std::u8string& text);
   void SetPortraitDescriptionMode(bool morphing);
+  void ShowPortraitPopup();
+  void HidePortraitPopup();
   void SetVoiceSelectorDisplay(int voice_id);
   void ToggleVoiceMenu();
   void HideVoiceMenu();
@@ -94,13 +114,18 @@ class Editor : public Steinberg::Vst::VSTGUIEditor, public IControlListener {
   void HideDescriptionPopup();
   void UpdateVoiceMorphingDescription();
   void ApplyVoiceMorphState(const common::VoiceMorphState& state);
+  void ApplyMorphViewMode(bool simple);
   void SetSimpleMorphMode(bool simple);
+  void RestoreMorphViewModeFromCurrentPreset();
   void UpdateMorphUiVisibility(bool morphing);
   void ResetMorph(bool simple);
   void ApplySimpleMorphWeights(const common::SimpleMorphWeights& weights,
                                int voice_count, bool save_now = true);
   void AddCurrentPreset();
-  void CreateNewPreset();
+  // reset_state is false only for the first blank preset created when a new
+  // editor has no persisted workspace.  That seed row must not clear a model
+  // which the host has already supplied.
+  void CreateNewPreset(bool reset_state = true);
   [[nodiscard]] auto CurrentModelVoicePresetName() -> std::string;
   auto RenameSelectedPresetFromCurrentModelVoice() -> bool;
   void ApplyPreset(int index);
@@ -108,7 +133,7 @@ class Editor : public Steinberg::Vst::VSTGUIEditor, public IControlListener {
   void MovePreset(int index, int destination);
   void DeletePreset(int index);
   void RefreshPresetPanel(int selected = -1);
-  void SelectRightPanel(bool effects);
+  void SelectRightPanel(int page);
   void SavePresets();
   void ImportPresets(int mode);
   void ExportPresets(bool all_banks);
@@ -132,19 +157,35 @@ class Editor : public Steinberg::Vst::VSTGUIEditor, public IControlListener {
   // Reserved for a future Options/help switch. This is a UI preference, not
   // a VST parameter or preset value.
   void SetControlHelpEnabled(bool enabled);
+  void PollAudioLevels();
+  void PollVstRecordingStatus();
+  void ChooseVstRecordingPath();
+  void ToggleVstRecording();
+  void StartVstRecording();
+  void StopVstRecording();
+  void UpdateVstRecordingControls();
+  void SendVstRecordingStart();
+  void SendVstRecordingSelection();
+  void SendVstRecordingStop();
+  void RefreshVstWasapiDevices();
+  void SendVstDirectWasapiSelection();
+  void SendVstDirectWasapiOff();
+  void UpdateVstDirectWasapiControls();
 
   std::map<ParamID, CControl*> controls_;
   CFontRef font_, font_bold_, font_description_, font_small_, font_small_bold_,
-      font_tab_;
+      font_tab_, font_tab_bold_;
   CFontRef font_heading_, font_strong_;
   bool control_help_enabled_ = true;
   bool japanese_tooltips_ = false;
+  bool standalone_frame_ = false;
   std::optional<common::ModelConfig> model_config_;
   CViewContainer* source_pitch_panel_ = nullptr;
 
   // Portrait / morph
   CView* portrait_view_ = nullptr;
   CViewContainer* portrait_panel_ = nullptr;
+  PortraitPopupView* portrait_popup_view_ = nullptr;
   CView* unloaded_logo_view_ = nullptr;
   std::unique_ptr<MorphPadController> morph_pad_controller_;
   MorphPadView* morph_pad_view_ = nullptr;
@@ -152,7 +193,9 @@ class Editor : public Steinberg::Vst::VSTGUIEditor, public IControlListener {
   CViewContainer* morph_mode_switch_ = nullptr;
   CTextLabel* simple_morph_tab_ = nullptr;
   CTextLabel* advanced_morph_tab_ = nullptr;
-  bool simple_morph_mode_ = true;
+  // Entering Voice Morphing Mode starts on the 2D PAD.  A preset can still
+  // explicitly restore SLIDER mode when it contains that choice.
+  bool simple_morph_mode_ = false;
   bool morphing_active_ = false;
 
   // Presets shared with the future standalone client.
@@ -166,11 +209,31 @@ class Editor : public Steinberg::Vst::VSTGUIEditor, public IControlListener {
   bool applying_preset_ = false;
   bool preset_save_pending_ = false;
   VSTGUI::SharedPointer<VSTGUI::CVSTGUITimer> preset_save_timer_;
+  VSTGUI::SharedPointer<VSTGUI::CVSTGUITimer> audio_level_timer_;
   bool rename_selected_preset_after_model_load_ = false;
   PresetPanel* preset_panel_ = nullptr;
+  VerticalScrollView* effects_scroll_ = nullptr;
   SurfacePanel* effects_panel_ = nullptr;
+  VerticalScrollView* standalone_inout_scroll_ = nullptr;
+  SurfacePanel* standalone_inout_panel_ = nullptr;
+  VerticalScrollView* vst_inout_scroll_ = nullptr;
+  SurfacePanel* vst_inout_panel_ = nullptr;
+  VSTGUI::COptionMenu* vst_output_device_menu_ = nullptr;
+  VSTGUI::CCheckBox* vst_exclusive_checkbox_ = nullptr;
+  LevelIndicator* vst_output_level_ = nullptr;
+  std::vector<std::string> vst_output_device_ids_;
+  VSTGUI::COptionMenu* vst_recording_mode_menu_ = nullptr;
+  GlowingActionLabel* vst_record_button_ = nullptr;
+  GlowingActionLabel* vst_record_path_button_ = nullptr;
+  VSTGUI::CTextLabel* vst_recording_status_label_ = nullptr;
+  common::RecordingMode vst_recording_mode_ = common::RecordingMode::kOff;
+  std::filesystem::path vst_recording_path_;
   GlowingActionLabel* presets_tab_ = nullptr;
   GlowingActionLabel* effects_tab_ = nullptr;
+  GlowingActionLabel* standalone_inout_tab_ = nullptr;
+  GlowingActionLabel* vst_inout_tab_ = nullptr;
+  LevelIndicator* input_level_ = nullptr;
+  LevelIndicator* output_level_ = nullptr;
   DescriptionPane* portrait_description_pane_ = nullptr;
   MorphFalloffSlider* morph_falloff_slider_ = nullptr;
   CTextLabel* morph_reset_button_ = nullptr;
@@ -186,13 +249,10 @@ class Editor : public Steinberg::Vst::VSTGUIEditor, public IControlListener {
   // Description popup
   DescriptionPopupView* description_popup_ = nullptr;
 
-  // Header / Page
+  // Header
   CTextLabel* conversion_status_label_ = nullptr;
   GlowingActionLabel* bypass_button_ = nullptr;
   CTextLabel* model_name_label_ = nullptr;
-  std::array<CViewContainer*, 3> page_views_;
-  std::array<CTextLabel*, 3> page_tabs_;
-  CView* tab_indicator_ = nullptr;
   struct FocusColumnEntry {
     FocusColumn role;
     SurfacePanel* panel;
@@ -204,6 +264,7 @@ class Editor : public Steinberg::Vst::VSTGUIEditor, public IControlListener {
 
   // Portrait bitmap cache
   std::map<std::u8string, SharedPointer<CBitmap>> portraits_;
+  std::map<std::u8string, SharedPointer<CBitmap>> portrait_popup_bitmaps_;
   std::map<std::u8string, SharedPointer<CBitmap>> portrait_menu_thumbnails_;
   std::map<std::u8string, SharedPointer<CBitmap>> portrait_marker_thumbnails_;
 

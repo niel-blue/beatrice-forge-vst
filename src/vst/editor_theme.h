@@ -9,97 +9,31 @@
 
 namespace beatrice::vst::theme {
 
-enum class ActionRole { kSwitch, kAction, kToggle };
+enum class ActionRole { kSwitch, kAction };
 
 inline auto WithAlpha(const VSTGUI::CColor& color, const uint8_t alpha)
     -> VSTGUI::CColor {
   return {color.red, color.green, color.blue, alpha};
 }
 
-// Named palettes. Components below use the role aliases at the end of this
-// file, so changing the active palette never requires editing UI code.
-namespace blue {
-inline constexpr auto kBackground = VSTGUI::CColor(0x13, 0x1a, 0x20);
-inline constexpr auto kSurface = VSTGUI::CColor(0x1e, 0x32, 0x41);
-inline constexpr auto kPanel = VSTGUI::CColor(0x1e, 0x32, 0x41);
-inline constexpr auto kHeader = kSurface;
-inline constexpr auto kTabSelected = VSTGUI::CColor(0x1e, 0x32, 0x41);
-inline constexpr auto kTabUnselected = VSTGUI::CColor(0x19, 0x26, 0x32);
-inline constexpr auto kSwitch = kTabUnselected;
-inline constexpr auto kPresetTabSelected = VSTGUI::CColor(0x31, 0x48, 0x5b);
-inline constexpr auto kPresetTabUnselected = VSTGUI::CColor(0x25, 0x3a, 0x4c);
-inline constexpr auto kPresetSelected = VSTGUI::CColor(0x46, 0x72, 0x91);
-inline constexpr auto kPresetUnselected = VSTGUI::CColor(0x31, 0x48, 0x5b);
-inline constexpr auto kActionButton = VSTGUI::CColor(0x11, 0x47, 0x6b);
-inline constexpr auto kActionPressed = VSTGUI::CColor(0x46, 0x72, 0x91);
-inline constexpr auto kDeleteConfirm = VSTGUI::CColor(0x2d, 0x5c, 0x78);
-inline constexpr auto kMorphGridBackground = VSTGUI::CColor(0x10, 0x19, 0x20);
-inline constexpr auto kMorphGridFrame = VSTGUI::CColor(0x62, 0x9a, 0xbd, 0x60);
-inline constexpr auto kMorphGridLine = VSTGUI::CColor(0x62, 0x9a, 0xbd, 0x3e);
-inline constexpr auto kMorphMarkerBackground = VSTGUI::CColor(0x19, 0x2b, 0x38);
-inline constexpr auto kMorphMarkerFrame = VSTGUI::CColor(0x9a, 0xd2, 0xf2, 0x84);
-inline constexpr auto kMorphCursor = VSTGUI::CColor(0x76, 0xb7, 0xe1);
-inline constexpr auto kMorphCursorFrame = VSTGUI::CColor(0x10, 0x20, 0x2c);
-inline constexpr auto kMorphLabelBackground = VSTGUI::CColor(0x0d, 0x18, 0x22, 0xd8);
-inline constexpr auto kMorphLabelFrame = VSTGUI::CColor(0x9a, 0xd2, 0xf2, 0x70);
-inline constexpr auto kVoiceMenuHover = VSTGUI::CColor(0x58, 0x83, 0x9c, 0x22);
-inline constexpr auto kVoiceMenuFrame = VSTGUI::CColor(0x76, 0xb7, 0xe1, 0x80);
-inline constexpr auto kVoiceMenuPlaceholder = VSTGUI::CColor(0x24, 0x3d, 0x4d);
-inline constexpr auto kSliderFrame = VSTGUI::CColor(0x05, 0x05, 0x05);
-inline constexpr auto kSliderShadow = VSTGUI::CColor(0x00, 0x00, 0x00, 0x5c);
-inline constexpr auto kSliderHoverOverlay = VSTGUI::CColor(0x66, 0xb8, 0xee, 0x28);
-inline constexpr auto kDescriptionOverlay = VSTGUI::CColor(0x00, 0x00, 0x00, 0x2a);
-inline constexpr auto kDropdown = VSTGUI::CColor(0x18, 0x22, 0x2d);
-inline constexpr auto kDropdownBorder = VSTGUI::CColor(0x62, 0x9a, 0xbd, 0x88);
-inline constexpr auto kScrollbarBackground = VSTGUI::CColor(0x12, 0x1b, 0x25, 0xd0);
-inline constexpr auto kScrollbarFrame = VSTGUI::CColor(0x66, 0xb8, 0xee, 0x48);
-inline constexpr auto kScrollbarThumb = VSTGUI::CColor(0x58, 0xb7, 0xf2, 0xe8);
-inline constexpr auto kTextPrimary = VSTGUI::CColor(0xf0, 0xf5, 0xf9);
-inline constexpr auto kTextSecondary = VSTGUI::CColor(0xc9, 0xde, 0xec);
-inline constexpr auto kTextMuted = VSTGUI::CColor(0x9a, 0xb5, 0xc8);
-inline constexpr auto kTextValue = VSTGUI::CColor(0xe3, 0xf0, 0xf8);
-inline constexpr auto kTextAccent = VSTGUI::CColor(0x9a, 0xd2, 0xf2);
-inline constexpr auto kTextDisabled = VSTGUI::CColor(0x78, 0x92, 0xa3);
-inline constexpr auto kTextOnWarm = VSTGUI::CColor(0x10, 0x10, 0x0f);
-inline constexpr auto kSliderHandle = VSTGUI::CColor(0x58, 0xb7, 0xf2);
-inline constexpr auto kSliderTrackActive = VSTGUI::CColor(0x76, 0xb7, 0xe1);
-inline constexpr auto kSliderTrackInactive = VSTGUI::CColor(0x3f, 0x70, 0x8d);
-inline constexpr auto kSliderHandleFocused = VSTGUI::CColor(0x9a, 0xd2, 0xf2);
-inline constexpr auto kSliderHandleUnfocused = VSTGUI::CColor(0x4d, 0x86, 0xa8);
-inline constexpr auto kSliderDisabled = VSTGUI::CColor(0x4a, 0x5d, 0x6a);
-inline constexpr auto kPanelOverlay = VSTGUI::CColor(0xff, 0xff, 0xff, 0x0a);
-inline constexpr auto kControlOverlay = VSTGUI::CColor(0xff, 0xff, 0xff, 0x0e);
-inline constexpr auto kHeaderOverlay = VSTGUI::CColor(0xff, 0xff, 0xff, 0x10);
-inline constexpr auto kPanelBorder = VSTGUI::CColor(0x62, 0x9a, 0xbd, 0x88);
-inline constexpr auto kPanelBorderSubtle = VSTGUI::CColor(0x62, 0x9a, 0xbd, 0x38);
-inline constexpr auto kActionFlash = VSTGUI::CColor(0x9a, 0xd2, 0xf2, 0x24);
-inline constexpr auto kActionGlowNear = VSTGUI::CColor(0x9a, 0xd2, 0xf2, 0x48);
-inline constexpr auto kActionGlowMid = VSTGUI::CColor(0x9a, 0xd2, 0xf2, 0x2c);
-inline constexpr auto kActionGlowFar = VSTGUI::CColor(0x9a, 0xd2, 0xf2, 0x18);
-inline constexpr auto kBypassOnText = VSTGUI::CColor(0x9a, 0xe6, 0xa7);
-inline constexpr auto kBypassOffText = VSTGUI::CColor(0x8a, 0x8d, 0x91);
-inline constexpr auto kBypassOnBackground = VSTGUI::CColor(0x2f, 0x75, 0x51);
-inline constexpr auto kBypassOffBackground = kDropdown;
-}  // namespace blue
-
 namespace original {
 // Exact role values recovered from the upstream editor, with selected roles
 // kept deliberately brighter so the active tab/control is unambiguous.
-inline constexpr auto kBackground = VSTGUI::CColor(0x09, 0x09, 0x09);
-inline constexpr auto kSurface = VSTGUI::CColor(0x22, 0x20, 0x1e);
-inline constexpr auto kPanel = VSTGUI::CColor(0x22, 0x20, 0x1e);
-inline constexpr auto kHeader = VSTGUI::CColor(0x13, 0x11, 0x0f);
+inline constexpr auto kBackground = VSTGUI::CColor(0x11, 0x10, 0x0f);
+inline constexpr auto kSurface = VSTGUI::CColor(0x1d, 0x1d, 0x1a);
+inline constexpr auto kPanel = VSTGUI::CColor(0x1d, 0x1d, 0x1a);
+inline constexpr auto kHeader = VSTGUI::CColor(0x11, 0x10, 0x0f);
 // State colors are intentionally separated from the upstream base colors.
 // The upstream charcoal/gold character is retained, while the active state
 // is made visibly brighter than its inactive counterpart.
-inline constexpr auto kTabSelected = VSTGUI::CColor(0x22, 0x20, 0x1e);
+inline constexpr auto kTabSelected = VSTGUI::CColor(0x1d, 0x1d, 0x1a);
 inline constexpr auto kTabUnselected = VSTGUI::CColor(0x16, 0x14, 0x11);
 inline constexpr auto kSwitch = VSTGUI::CColor(0x16, 0x14, 0x11);
-inline constexpr auto kPresetTabSelected = VSTGUI::CColor(0x34, 0x2f, 0x26);
+inline constexpr auto kPresetTabSelected = VSTGUI::CColor(0x2b, 0x28, 0x23);
 inline constexpr auto kPresetTabUnselected = VSTGUI::CColor(0x19, 0x17, 0x14);
-inline constexpr auto kPresetSelected = VSTGUI::CColor(0x62, 0x56, 0x46);
-inline constexpr auto kPresetUnselected = VSTGUI::CColor(0x34, 0x2f, 0x26);
-inline constexpr auto kActionButton = VSTGUI::CColor(0x44, 0x38, 0x22);
+inline constexpr auto kPresetSelected = VSTGUI::CColor(0x43, 0x3b, 0x30);
+inline constexpr auto kPresetUnselected = VSTGUI::CColor(0x2b, 0x28, 0x23);
+inline constexpr auto kActionButton = VSTGUI::CColor(0x1b, 0x1a, 0x19);
 inline constexpr auto kActionPressed = VSTGUI::CColor(0x62, 0x56, 0x46);
 inline constexpr auto kDeleteConfirm = VSTGUI::CColor(0x72, 0x32, 0x32);
 inline constexpr auto kMorphGridBackground = VSTGUI::CColor(0x10, 0x0f, 0x0e);
@@ -145,9 +79,9 @@ inline constexpr auto kActionFlash = VSTGUI::CColor(0xf0, 0xcf, 0x90, 0x24);
 inline constexpr auto kActionGlowNear = VSTGUI::CColor(0xf0, 0xcf, 0x90, 0x48);
 inline constexpr auto kActionGlowMid = VSTGUI::CColor(0xf0, 0xcf, 0x90, 0x2c);
 inline constexpr auto kActionGlowFar = VSTGUI::CColor(0xf0, 0xcf, 0x90, 0x18);
-inline constexpr auto kBypassOnText = VSTGUI::CColor(0x9a, 0xe6, 0xa7);
+inline constexpr auto kBypassOnText = kTextAccent;
 inline constexpr auto kBypassOffText = kTextDisabled;
-inline constexpr auto kBypassOnBackground = VSTGUI::CColor(0x3b, 0x6f, 0x46);
+inline constexpr auto kBypassOnBackground = kSliderTrackInactive;
 inline constexpr auto kBypassOffBackground = kDropdown;
 }  // namespace original
 
@@ -208,6 +142,24 @@ inline constexpr auto kSecondaryText = kTextSecondary;
 inline constexpr auto kBodyText = kTextSecondary;
 inline constexpr auto kWarmText = kTextPrimary;
 inline constexpr auto kHeaderAccent = kTextAccent;
+// Semantic component roles.  UI builders use these names rather than palette
+// implementation details, so a new menu or action button automatically keeps
+// the established fill, frame, text and active-state rules.
+inline constexpr auto kMenuFill = kDropdown;
+inline constexpr auto kMenuFrame = active::kDropdownBorder;
+inline constexpr auto kMenuText = kWarmText;
+inline constexpr auto kMenuChevron = kAccent;
+inline constexpr auto kSwitchFill = kSwitch;
+inline constexpr auto kActionFill = kActionButton;
+inline constexpr auto kActionPressedFill = kActionPressed;
+inline constexpr auto kActionText = kAccent;
+// Fine warm outline shared by the explicit action buttons (RESET and the
+// preset-management actions).  Menus and tab labels keep their existing
+// frames; this role is opt-in at the action-view level.
+inline constexpr auto kActionOutline = kMenuFrame;
+inline constexpr auto kSectionTitle = kText;
+inline constexpr auto kItemLabel = kSecondaryText;
+inline constexpr auto kDisabledText = kTextMuted;
 inline constexpr auto kSliderHandle = active::kSliderHandle;
 inline constexpr auto kSliderTrackActive = active::kSliderTrackActive;
 inline constexpr auto kSliderTrackInactive = active::kSliderTrackInactive;

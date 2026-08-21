@@ -4,6 +4,7 @@
 #define APSTUDIO_READONLY_SYMBOLS
 
 logo.png PNG "../resource/logo.png"
+logo_forge.png PNG "../resource/logo_forge.png"
 
 /////////////////////////////////////////////////////////////////////////////
 // Version
@@ -34,6 +35,7 @@ BEGIN
             VALUE "CompanyName",      stringCompanyName
             VALUE "LegalCopyright",   stringLegalCopyright
             VALUE "LegalTrademarks",  stringLegalTrademarks
+            VALUE "Comments",         stringProductComment
             //VALUE "PrivateBuild",     " \0"
             //VALUE "SpecialBuild",     " \0"
             //VALUE "Comments",         " \0"
