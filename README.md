@@ -1,3 +1,5 @@
+**日本語** | [English](README_EN.md)
+
 # Beatrice Forge
 
 <img width="962" height="721" alt="スクリーンショット 2026-08-22 025501" src="https://github.com/user-attachments/assets/b8533872-587d-47a8-b721-ce1927f2f685" />
@@ -102,13 +104,3 @@ VST3は`build/vs3/VST3/Release/`に生成されます。DAWのVSTフォルダへ
 ## ライセンス
 
 Beatrice Forge のVST3プラグイン本体は MIT License です。著作権表示と許諾文は [LICENSE.txt](LICENSE.txt) を参照してください。
-
-## English summary
-
-Beatrice Forge is a Windows-oriented VST3 build based on Project Beatrice, with Noise Reduction Boost, input cleanup, output effects, input/output level meters, a legacy-style morph screen, optional direct WASAPI output, and recording.
-
-The Forge product version is 0.9.0. This build is based on Project Beatrice 2.0.0-rc.3; the upstream base version and the Forge product version are managed separately.
-
-The host input/output routing is not modified. Direct output is disabled by default, uses WASAPI only, and is intended as an optional extra output path. Plugin state is stored by the VST3 host rather than in the Windows registry.
-
-Models and the non-public Beatrice inference library are not bundled.
