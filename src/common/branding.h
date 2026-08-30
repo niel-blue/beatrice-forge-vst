@@ -8,8 +8,6 @@
 namespace beatrice::common {
 
 inline constexpr std::string_view kProductName = "Beatrice Forge";
-inline constexpr std::string_view kStandaloneProductName =
-    "Beatrice Forge Standalone";
 inline constexpr std::string_view kAuthorName = "Niel";
 
 // The prefix is shared by the VST and standalone recorder so a recording can

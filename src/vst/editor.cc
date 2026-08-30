@@ -53,6 +53,7 @@
 #include "common/branding.h"
 #include "common/model_config.h"
 #include "common/parameter_schema.h"
+#include "common/product_version.h"
 #include "common/voice_morph_parameter.h"
 #include "common/voice_morph_state.h"
 #include "common/wasapi_device_catalog.h"
@@ -73,12 +74,6 @@
 #include "vst/level_indicator.h"
 #include "vst/parameter.h"
 #include "vst/surface_texture.h"
-
-#ifdef BEATRICE_ONLY_FOR_LINTER_DO_NOT_COMPILE_WITH_THIS
-#include "vst/metadata.h.in"
-#else
-#include "metadata.h"  // NOLINT(build/include_subdir)
-#endif
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -758,7 +753,8 @@ auto Editor::BuildFrame(void* const parent, const bool attach_to_platform,
   // The development version string is longer than a release version. Give the
   // right-aligned label enough room so its leading "V" is not clipped.
   make_label(header, layout::HeaderVersionRect(window_rect.getWidth()),
-             (UTF8String(layout::kHeaderVersionPrefix) + FULL_VERSION_STR).data(),
+             (UTF8String(layout::kHeaderVersionPrefix) +
+              common::kForgeFullVersion.data()).data(),
              font_small_,
              theme::kTextMuted, CHoriTxtAlign::kRightText);
 

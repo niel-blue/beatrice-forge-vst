@@ -1,23 +1,10 @@
 cmake_minimum_required(VERSION 3.25)
 set(CMAKE_CXX_STANDARD 20)
 
-set(FORGE_VERSION_MAJOR 0)
-set(FORGE_VERSION_MINOR 9)
-set(FORGE_VERSION_PATCH 0)
-set(FORGE_VERSION "${FORGE_VERSION_MAJOR}.${FORGE_VERSION_MINOR}.${FORGE_VERSION_PATCH}")
-# This identifies the upstream Beatrice build used as the processing base. It
-# is provenance information, not the Beatrice Forge product version.
-set(BEATRICE_BASE_VERSION "2.0.0-rc.3")
-set(BEATRICE_PRODUCT_NAME "Beatrice Forge")
-set(BEATRICE_PRODUCT_SLUG "beatrice_forge")
-set(BEATRICE_AUTHOR_NAME "Niel")
-execute_process(
-    COMMAND git rev-parse --short HEAD
-    OUTPUT_VARIABLE GIT_HASH
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-math(EXPR build_number 0x${GIT_HASH})
-message(STATUS "build_number: ${build_number}")
+include(cmake/BeatriceForgeVersion.cmake)
+include(cmake/BeatriceForgeCore.cmake)
+include(cmake/BeatriceForgeSharedUi.cmake)
+include(cmake/BeatriceForgeVstguiPrivacy.cmake)
 
 set(BEATRICE_PROCESSOR_UID "0x7a417351, 0x80d847b2, 0xbf4bfca8, 0x1183e747" CACHE STRING "Beatrice Forge VST3 processor UUID")
 set(BEATRICE_CONTROLLER_UID "0xbabcd3fb, 0x14564a2a, 0x84b71b24, 0xf6c5e661" CACHE STRING "Beatrice Forge VST3 controller UUID")
@@ -26,11 +13,9 @@ message(STATUS "BEATRICE_CONTROLLER_UID: ${BEATRICE_CONTROLLER_UID}")
 
 project(beatrice_forge VERSION ${FORGE_VERSION_MAJOR}.${FORGE_VERSION_MINOR}.${FORGE_VERSION_PATCH})
 option(BEATRICE_DEV_VERSION "Development version" ON)
-if(BEATRICE_DEV_VERSION)
-    set(FORGE_FULL_VERSION_STR ${FORGE_VERSION}-dev.${GIT_HASH})
-else()
-    set(FORGE_FULL_VERSION_STR ${FORGE_VERSION})
-endif()
+beatrice_forge_resolve_build_version("${CMAKE_CURRENT_SOURCE_DIR}")
+message(STATUS "Forge version: ${FORGE_FULL_VERSION_STR}")
+message(STATUS "build_number: ${build_number}")
 set(target ${BEATRICE_PRODUCT_SLUG}_${FORGE_FULL_VERSION_STR})
 
 add_compile_options("$<$<C_COMPILER_ID:MSVC>:/MT>")
@@ -67,6 +52,8 @@ endif()
 add_subdirectory(lib/vst3sdk)
 
 smtg_enable_vst3_sdk()
+beatrice_forge_apply_vstgui_file_dialog_privacy(
+    "${CMAKE_CURRENT_SOURCE_DIR}")
 
 if(SMTG_MAC)
     target_compile_options(vstgui PRIVATE -Wno-error=deprecated-declarations)
@@ -76,7 +63,6 @@ configure_file(src/vst/metadata.h.in src/vst/metadata.h @ONLY)
 configure_file(resource/Info.plist.in resource/Info.plist @ONLY)
 set(SMTG_PACKAGE_ICON_PATH ${CMAKE_CURRENT_SOURCE_DIR}/resource/icon.ico)
 
-add_library(beatricelib STATIC IMPORTED)
 if(SMTG_WIN)
     set(BEATRICE_LIBRARY_PATH ${CMAKE_CURRENT_SOURCE_DIR}/lib/beatricelib/beatrice.lib)
 elseif(SMTG_MAC)
@@ -84,52 +70,15 @@ elseif(SMTG_MAC)
 else()
     message(FATAL_ERROR "Unsupported platform")
 endif()
-set_property(
-    TARGET beatricelib
-    PROPERTY IMPORTED_LOCATION ${BEATRICE_LIBRARY_PATH}
-)
-
-# Host-independent processing and state used by the VST.
-set(BEATRICE_COMMON_SOURCES
-    ${BEATRICE_COMMON_SOURCE_DIR}/audio_engine.cc
-    ${BEATRICE_COMMON_SOURCE_DIR}/audio_recorder.cc
-    ${BEATRICE_COMMON_SOURCE_DIR}/recording_paths.cc
-    ${BEATRICE_COMMON_SOURCE_DIR}/wasapi_device_catalog.cc
-    ${BEATRICE_COMMON_SOURCE_DIR}/parameter_schema.cc
-    ${BEATRICE_COMMON_SOURCE_DIR}/parameter_state.cc
-    ${BEATRICE_COMMON_SOURCE_DIR}/preset.cc
-    ${BEATRICE_COMMON_SOURCE_DIR}/output_effects.cc
-    ${BEATRICE_COMMON_SOURCE_DIR}/processor_core_0.cc
-    ${BEATRICE_COMMON_SOURCE_DIR}/processor_core_1.cc
-    ${BEATRICE_COMMON_SOURCE_DIR}/processor_core_2.cc
-    ${BEATRICE_COMMON_SOURCE_DIR}/processor_proxy.cc
-    ${BEATRICE_COMMON_SOURCE_DIR}/voice_morph_parameter.cc
-)
-add_library(beatrice_core STATIC
-    ${BEATRICE_COMMON_SOURCES}
-)
+beatrice_forge_add_core(beatrice_core "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${BEATRICE_COMMON_ROOT}" "${BEATRICE_LIBRARY_PATH}")
 add_library(beatrice::core ALIAS beatrice_core)
-set_target_properties(beatrice_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_include_directories(beatrice_core
-    PUBLIC ${BEATRICE_COMMON_ROOT}
-    PUBLIC src
-    PUBLIC lib
-)
-target_link_libraries(beatrice_core PUBLIC beatricelib)
-if(SMTG_WIN)
-    target_link_libraries(beatrice_core PUBLIC ole32 propsys shell32 avrt)
-endif()
 
+beatrice_forge_collect_shared_ui_sources(BEATRICE_SHARED_UI_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}")
 smtg_add_vst3plugin(${target}
-    src/ui/control_help_locale.cc
-    src/vst/controller.cc
-    src/vst/description_text_layout.cc
-    src/vst/description_url.cc
-    src/vst/editor.cc
-    src/vst/editor_description.cc
-    src/vst/editor_morph_controller.cc
+    ${BEATRICE_SHARED_UI_SOURCES}
     src/vst/factory.cc
-    src/vst/parameter.cc
     src/vst/processor.cc
     src/vst/direct_wasapi_output.cc
 )
@@ -137,7 +86,14 @@ smtg_add_vst3plugin(${target}
 target_include_directories(${target}
     PRIVATE src
     PRIVATE lib
+    PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/src
     PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/src/vst
+)
+
+target_compile_definitions(${target} PRIVATE
+    BEATRICE_FORGE_VERSION_STR="${FORGE_VERSION}"
+    BEATRICE_FORGE_FULL_VERSION_STR="${FORGE_FULL_VERSION_STR}"
+    BEATRICE_BASE_VERSION_STR="${BEATRICE_BASE_VERSION}"
 )
 
 target_link_libraries(${target}
@@ -169,35 +125,12 @@ set(ARTIFACT_ROOT ${CMAKE_CURRENT_BINARY_DIR}/dist)
 file(MAKE_DIRECTORY ${ARTIFACT_ROOT})
 get_target_property(PLUGIN_PACKAGE_PATH ${target} SMTG_PLUGIN_PACKAGE_PATH)
 
-set(PARAPHERNALIA_COMMANDS)
-if(NOT BEATRICE_DEV_VERSION)
-    set(PARAPHERNALIA_DIR ${CMAKE_CURRENT_BINARY_DIR}/beatrice_paraphernalia_jvs)
-    file(MAKE_DIRECTORY ${PARAPHERNALIA_DIR})
-    set(PARAPHERNALIA_BASE_URL "https://huggingface.co/fierce-cats/beatrice-2.0.0-alpha/resolve/rc.0/rc.0/beatrice_paraphernalia_jvs_156_03000000")
-    set(PARAPHERNALIA_FILES
-        beatrice_paraphernalia_jvs.toml
-        phone_extractor.bin
-        pitch_estimator.bin
-        speaker_embeddings.bin
-        waveform_generator.bin
-        embedding_setter.bin
-        noimage.png
-    )
-    foreach(file ${PARAPHERNALIA_FILES})
-        file(DOWNLOAD ${PARAPHERNALIA_BASE_URL}/${file} ${PARAPHERNALIA_DIR}/${file})
-    endforeach()
-    list(APPEND PARAPHERNALIA_COMMANDS
-        COMMAND ${CMAKE_COMMAND} -E copy_directory ${PARAPHERNALIA_DIR} ${target}/beatrice_paraphernalia_jvs
-    )
-endif()
-
 add_custom_target(distribution
     COMMAND ${CMAKE_COMMAND} -E rm -rf ${target}
     COMMAND ${CMAKE_COMMAND} -E rm -f ${target}_${platform}.zip
     COMMAND ${CMAKE_COMMAND} -E make_directory ${target}
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${PLUGIN_PACKAGE_PATH} ${target}/${target}.vst3
     COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/LICENSE.txt ${target}
-    ${PARAPHERNALIA_COMMANDS}
     COMMAND ${CMAKE_COMMAND} -E tar cfv ${target}_${platform}.zip --format=zip ${target}
     WORKING_DIRECTORY ${ARTIFACT_ROOT}
 )

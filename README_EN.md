@@ -91,7 +91,7 @@ The VST3 package is generated under `build/vs3/VST3/Release/`. It is not automat
 
 - The primary target is a 64-bit plug-in host.
 - The inference library `beatrice.lib` is not downloaded automatically. Model files and supporting data are not included in this repository.
-- A Release configuration may download supporting files for the VST distribution from the official distribution URL configured in CMake.
+- Distribution packages contain only the plug-in; official models and supporting data are not bundled or downloaded automatically.
 - The VST-specific external output supports WASAPI only; ASIO is not available through this feature.
 - Enabling external output does not change the host input/output routing.
 - External output or recording may fail to start depending on device availability, sample rate, exclusive access, or host thread behavior.
