@@ -561,9 +561,18 @@ class PresetPanel final : public SurfacePanel, public IControlListener {
     rebuilding_ = true;
     // CScrollView applies its offset directly to child rectangles. New
     // children are created in local coordinates, so clear the old offset
-    // before removing/recreating rows or they can appear shifted/overlapped.
+    // before replacing rows or they can appear shifted/overlapped. Keep the
+    // previous rows until their replacements have been added; removing first
+    // creates a blank frame while the list is rebuilt, especially visible
+    // when switching back to this tab or dragging the scrollbar.
     scroll_->resetScrollOffset();
-    scroll_->removeAll(true);
+    auto previous_rows = std::vector<CView*>{};
+    previous_rows.reserve(scroll_->getNbViews());
+    for (auto index = 0U; index < scroll_->getNbViews(); ++index) {
+      if (auto* const view = scroll_->getView(index)) {
+        previous_rows.push_back(view);
+      }
+    }
     constexpr auto kRowHeight = layout::kPresetRowHeight;
     const auto row_width = scroll_->getViewSize().getWidth();
     const auto visible_range = VisiblePresetRange(previous_offset.y);
@@ -712,6 +721,10 @@ class PresetPanel final : public SurfacePanel, public IControlListener {
       } else {
         scroll_->setScrollOffset(target_offset);
       }
+    }
+    scroll_->invalid();
+    for (auto* const view : previous_rows) {
+      scroll_->removeView(view, true);
     }
     scroll_->invalid();
     rebuilding_ = was_rebuilding;

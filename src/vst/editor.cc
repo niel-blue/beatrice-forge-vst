@@ -2889,12 +2889,12 @@ void Editor::UpdateVstAdditionalInputControls() {
   }
   if (vst_recording_application_input_gain_slider_ != nullptr) {
     vst_recording_application_input_gain_slider_->SetEnabled(
-        editable && application_selected);
+        application_selected);
   }
   if (vst_voice_delay_slider_ != nullptr) {
     // BGM Delay is relevant only while ADD BGM has an application selected,
     // matching the BGM Gain control directly above it.
-    vst_voice_delay_slider_->SetEnabled(editable && application_selected);
+    vst_voice_delay_slider_->SetEnabled(application_selected);
   }
 }
 

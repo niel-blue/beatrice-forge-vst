@@ -116,6 +116,9 @@ class AudioRecorder {
 
   auto Start(const RecordingSettings& settings) -> bool;
   void Stop();
+  // Updates the additional-input mix used by the recording writer. This is
+  // safe while recording so the BGM gain control can remain live.
+  void SetAdditionalInputGainDb(double gain_db);
 
   void Push(float pre_conversion, float output_left, float output_right,
             float additional_input_left = 0.0F,
@@ -162,7 +165,7 @@ class AudioRecorder {
   std::unique_ptr<WaveWriter> input_writer_;
   std::unique_ptr<WaveWriter> output_writer_;
   std::unique_ptr<WaveWriter> stereo_writer_;
-  float additional_input_gain_ = 0.0F;
+  std::atomic<float> additional_input_gain_ = 0.0F;
   std::uint32_t voice_delay_frames_ = 0;
   mutable std::atomic_flag error_lock_ = ATOMIC_FLAG_INIT;
   std::string error_;

@@ -350,6 +350,14 @@ auto AudioRecorder::Start(const RecordingSettings& settings) -> bool {
   return true;
 }
 
+void AudioRecorder::SetAdditionalInputGainDb(const double gain_db) {
+  const auto clamped = std::clamp(gain_db, kMinAdditionalInputGainDb,
+                                  kMaxAdditionalInputGainDb);
+  additional_input_gain_.store(static_cast<float>(std::pow(
+                                    10.0, clamped / 20.0)),
+                                std::memory_order_relaxed);
+}
+
 void AudioRecorder::Push(const float pre_conversion, const float output_left,
                          const float output_right,
                          const float additional_input_left,
@@ -382,10 +390,12 @@ void AudioRecorder::WriterLoop() {
                                   const float output_right,
                                   const float additional_input_left,
                                   const float additional_input_right) {
+    const auto additional_input_gain =
+        additional_input_gain_.load(std::memory_order_relaxed);
     const auto mixed_left =
-        output_left + additional_input_left * additional_input_gain_;
+        output_left + additional_input_left * additional_input_gain;
     const auto mixed_right =
-        output_right + additional_input_right * additional_input_gain_;
+        output_right + additional_input_right * additional_input_gain;
     if (settings_.mode == RecordingMode::kOutput) {
       output_writer_->WriteStereo(mixed_left, mixed_right);
     } else if (settings_.mode == RecordingMode::kSeparateInputOutput) {
