@@ -326,6 +326,28 @@ class PresetPanel final : public SurfacePanel, public IControlListener {
         }, ActionIcon::kExport, true, ui::ControlHelpID::kExportPresetList));
   }
 
+  bool attached(CView* parent) override {
+    const auto result = SurfacePanel::attached(parent);
+    if (result) {
+      // Standalone attaches the editor frame after BuildFrame has created the
+      // panel.  At that point CScrollView has its real viewport, so rebuild
+      // once after attachment instead of retaining a range calculated while
+      // the panel was still detached.
+      ScheduleVisibleRebuild();
+    }
+    return result;
+  }
+
+  void setVisible(const bool state) override {
+    const auto was_visible = isVisible();
+    SurfacePanel::setVisible(state);
+    if (state && !was_visible) {
+      // Switching back from another right-hand tab must recreate rows that
+      // were not present when the hidden panel had a zero-sized viewport.
+      ScheduleVisibleRebuild();
+    }
+  }
+
   void SetPresets(const std::vector<common::Preset>& presets,
                   const int selected = -1) {
     // Keep the editor's authoritative vector by reference.  The panel only
@@ -482,6 +504,21 @@ class PresetPanel final : public SurfacePanel, public IControlListener {
       return;
     }
     Rebuild(false, false);
+  }
+
+  void ScheduleVisibleRebuild() {
+    if (visible_rebuild_scheduled_) {
+      return;
+    }
+    visible_rebuild_scheduled_ = true;
+    VSTGUI::Call::later([self = VSTGUI::shared(this)]() {
+      self->visible_rebuild_scheduled_ = false;
+      if (!self->isVisible()) {
+        return;
+      }
+      self->Rebuild();
+      self->invalid();
+    });
   }
 
   auto MakeAction(const CRect& rect, const char* text,
@@ -784,6 +821,7 @@ class PresetPanel final : public SurfacePanel, public IControlListener {
   int visible_first_ = -1;
   int visible_last_ = -1;
   bool rebuilding_ = false;
+  bool visible_rebuild_scheduled_ = false;
   int selected_ = -1;
   int delete_armed_preset_ = -1;
   int editing_ = -1;
