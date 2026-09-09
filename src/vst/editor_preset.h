@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <functional>
 #include <cstring>
 #include <string>
@@ -145,8 +146,15 @@ class PresetListScrollView final : public VSTGUI::CScrollView {
   }
 
   void setViewSize(const CRect& rect, const bool invalid = true) override {
+    const auto previous_size = getViewSize();
     CScrollView::setViewSize(rect, invalid);
     UpdateScrollbarVisibility();
+    if (previous_size != rect && scroll_changed_action_) {
+      // A host can resize the editor while this panel is hidden.  Recompute
+      // the virtualized row range after the new viewport is laid out instead
+      // of waiting for a scrollbar event that may never arrive.
+      scroll_changed_action_();
+    }
   }
 
   void SetScrollChangedAction(ScrollChangedAction action) {
@@ -155,18 +163,42 @@ class PresetListScrollView final : public VSTGUI::CScrollView {
 
   void valueChanged(CControl* control) override {
     CScrollView::valueChanged(control);
+    if (!applying_stable_offset_) {
+      // Any user/container-driven movement supersedes a deferred corrective
+      // offset from an earlier rebuild.  Without this generation bump, an
+      // old callback can move the list back after the user has switched tabs
+      // or dragged the scrollbar, which presents as rows disappearing and
+      // reappearing.
+      ++stable_offset_generation_;
+    }
     if (scroll_changed_action_) {
       scroll_changed_action_();
     }
+  }
+
+  // Hide the base helper so normal row-range updates also invalidate a stale
+  // deferred correction.  CScrollView itself is still used internally by the
+  // scrollbar callbacks, which are covered by valueChanged above.
+  void setScrollOffset(const CPoint& offset) {
+    ++stable_offset_generation_;
+    CScrollView::setScrollOffset(offset);
   }
 
   // CScrollView may normalize its offset once more when the new container is
   // laid out. Apply the requested position again after that pass so adding a
   // row never leaves the newest row underneath the viewport edge.
   void SetStableScrollOffset(const CPoint& offset) {
-    setScrollOffset(offset);
-    VSTGUI::Call::later([self = VSTGUI::shared(this), offset]() {
-      self->setScrollOffset(offset);
+    const auto generation = ++stable_offset_generation_;
+    applying_stable_offset_ = true;
+    CScrollView::setScrollOffset(offset);
+    applying_stable_offset_ = false;
+    VSTGUI::Call::later([self = VSTGUI::shared(this), offset, generation]() {
+      if (generation != self->stable_offset_generation_) {
+        return;
+      }
+      self->applying_stable_offset_ = true;
+      self->CScrollView::setScrollOffset(offset);
+      self->applying_stable_offset_ = false;
       self->invalid();
     });
   }
@@ -183,6 +215,8 @@ class PresetListScrollView final : public VSTGUI::CScrollView {
   }
 
   ScrollChangedAction scroll_changed_action_;
+  std::uint64_t stable_offset_generation_ = 0;
+  bool applying_stable_offset_ = false;
 };
 
 class PresetRenameTextEdit final : public VSTGUI::CTextEdit {
@@ -503,20 +537,29 @@ class PresetPanel final : public SurfacePanel, public IControlListener {
     if (range.first == visible_first_ && range.second == visible_last_) {
       return;
     }
-    Rebuild(false, false);
+    // Scrollbar callbacks run from inside CScrollView's child-offset update.
+    // Rebuilding rows synchronously there removes children during traversal
+    // and can produce a blank frame.  Coalesce the request onto the next UI
+    // turn so the scroll operation finishes before rows are replaced.
+    ScheduleVisibleRebuild(false);
   }
 
-  void ScheduleVisibleRebuild() {
+  void ScheduleVisibleRebuild(const bool stabilize_offset = true) {
     if (visible_rebuild_scheduled_) {
+      // A scroll request should not inherit a corrective deferred offset from
+      // an earlier attach/tab request.  The latest request is authoritative.
+      visible_rebuild_stabilize_offset_ =
+          visible_rebuild_stabilize_offset_ && stabilize_offset;
       return;
     }
     visible_rebuild_scheduled_ = true;
+    visible_rebuild_stabilize_offset_ = stabilize_offset;
     VSTGUI::Call::later([self = VSTGUI::shared(this)]() {
       self->visible_rebuild_scheduled_ = false;
       if (!self->isVisible()) {
         return;
       }
-      self->Rebuild();
+      self->Rebuild(false, self->visible_rebuild_stabilize_offset_);
       self->invalid();
     });
   }
@@ -835,6 +878,7 @@ class PresetPanel final : public SurfacePanel, public IControlListener {
   int visible_last_ = -1;
   bool rebuilding_ = false;
   bool visible_rebuild_scheduled_ = false;
+  bool visible_rebuild_stabilize_offset_ = true;
   int selected_ = -1;
   int delete_armed_preset_ = -1;
   int editing_ = -1;
