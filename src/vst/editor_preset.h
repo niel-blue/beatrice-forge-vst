@@ -3,6 +3,8 @@
 #ifndef BEATRICE_VST_EDITOR_PRESET_H_
 #define BEATRICE_VST_EDITOR_PRESET_H_
 
+#include <algorithm>
+#include <cmath>
 #include <functional>
 #include <cstring>
 #include <string>
@@ -120,6 +122,8 @@ class PresetTabScrollView final : public VSTGUI::CScrollView {
 // gutter at all times, then only hide/show the scrollbar control itself.
 class PresetListScrollView final : public VSTGUI::CScrollView {
  public:
+  using ScrollChangedAction = std::function<void()>;
+
   PresetListScrollView(const CRect& rect, const CRect& container_size)
       : CScrollView(rect, container_size,
                     CScrollView::kVerticalScrollbar |
@@ -145,6 +149,17 @@ class PresetListScrollView final : public VSTGUI::CScrollView {
     UpdateScrollbarVisibility();
   }
 
+  void SetScrollChangedAction(ScrollChangedAction action) {
+    scroll_changed_action_ = std::move(action);
+  }
+
+  void valueChanged(CControl* control) override {
+    CScrollView::valueChanged(control);
+    if (scroll_changed_action_) {
+      scroll_changed_action_();
+    }
+  }
+
   // CScrollView may normalize its offset once more when the new container is
   // laid out. Apply the requested position again after that pass so adding a
   // row never leaves the newest row underneath the viewport edge.
@@ -166,6 +181,8 @@ class PresetListScrollView final : public VSTGUI::CScrollView {
       bar->setMouseEnabled(needed);
     }
   }
+
+  ScrollChangedAction scroll_changed_action_;
 };
 
 class PresetRenameTextEdit final : public VSTGUI::CTextEdit {
@@ -272,6 +289,7 @@ class PresetPanel final : public SurfacePanel, public IControlListener {
     ApplyScrollbarTheme(scroll_);
     scroll_->setBackgroundColor(kTransparentCColor);
     scroll_->setTransparency(true);
+    scroll_->SetScrollChangedAction([this]() { HandleScrollChanged(); });
     addView(scroll_);
 
     export_status_ = new CTextLabel(
@@ -309,15 +327,16 @@ class PresetPanel final : public SurfacePanel, public IControlListener {
   }
 
   void SetPresets(const std::vector<common::Preset>& presets,
-                  const int selected = -1,
-                  std::vector<SharedPointer<CBitmap>> thumbnails = {}) {
-    presets_ = presets;
-    if (delete_armed_preset_ >= static_cast<int>(presets_.size())) {
+                  const int selected = -1) {
+    // Keep the editor's authoritative vector by reference.  The panel only
+    // needs the records while it builds the visible rows; copying every preset
+    // here made opening a large preset bank needlessly expensive.
+    preset_source_ = &presets;
+    if (delete_armed_preset_ >= static_cast<int>(CurrentPresets().size())) {
       delete_armed_preset_ = -1;
     }
-    thumbnails_ = std::move(thumbnails);
     const auto next_selected =
-        selected >= 0 && selected < static_cast<int>(presets_.size())
+        selected >= 0 && selected < static_cast<int>(CurrentPresets().size())
             ? selected
             : -1;
     const auto selection_changed = next_selected != selected_;
@@ -339,7 +358,17 @@ class PresetPanel final : public SurfacePanel, public IControlListener {
 
   void SetBanks(const std::vector<common::PresetBank>& banks,
                 const int selected_bank) {
-    banks_ = banks;
+    // The bank strip only displays names and needs the selected index.  Do not
+    // deep-copy every bank's preset records into the panel.
+    banks_.clear();
+    banks_.reserve(banks.size());
+    for (const auto& bank : banks) {
+      banks_.push_back(common::PresetBank{
+          .id = bank.id,
+          .name = bank.name,
+          .selected_preset = bank.selected_preset,
+      });
+    }
     selected_bank_ = selected_bank;
     delete_armed_bank_ = -1;
     if (delete_bank_button_) {
@@ -354,7 +383,8 @@ class PresetPanel final : public SurfacePanel, public IControlListener {
   void valueChanged(CControl* control) override {
     auto* const edit = dynamic_cast<VSTGUI::CTextEdit*>(control);
     const auto index = control ? control->getTag() : -1;
-    if (edit && index >= 0 && index < static_cast<int>(presets_.size()) &&
+    if (edit && index >= 0 &&
+        index < static_cast<int>(CurrentPresets().size()) &&
         rename_) {
       editing_ = -1;
       const auto name = std::string(edit->getText().getString());
@@ -395,7 +425,7 @@ class PresetPanel final : public SurfacePanel, public IControlListener {
   bool wantsFocus() const override { return true; }
 
   void onKeyboardEvent(VSTGUI::KeyboardEvent& event) override {
-    if (event.type != VSTGUI::EventType::KeyDown || presets_.empty()) {
+    if (event.type != VSTGUI::EventType::KeyDown || CurrentPresets().empty()) {
       SurfacePanel::onKeyboardEvent(event);
       return;
     }
@@ -403,7 +433,8 @@ class PresetPanel final : public SurfacePanel, public IControlListener {
     if (event.virt == VSTGUI::VirtualKey::Up) {
       next = std::max(0, selected_ - 1);
     } else if (event.virt == VSTGUI::VirtualKey::Down) {
-      next = std::min(static_cast<int>(presets_.size()) - 1, selected_ + 1);
+      next = std::min(static_cast<int>(CurrentPresets().size()) - 1,
+                      selected_ + 1);
     } else {
       SurfacePanel::onKeyboardEvent(event);
       return;
@@ -416,6 +447,43 @@ class PresetPanel final : public SurfacePanel, public IControlListener {
   }
 
  private:
+  const std::vector<common::Preset>& CurrentPresets() const {
+    static const auto empty = std::vector<common::Preset>{};
+    return preset_source_ != nullptr ? *preset_source_ : empty;
+  }
+
+  auto VisiblePresetRange(const double offset) const -> std::pair<int, int> {
+    const auto count = static_cast<int>(CurrentPresets().size());
+    if (count == 0 || scroll_ == nullptr) {
+      return {0, 0};
+    }
+    constexpr auto kOverscanRows = 1;
+    const auto viewport_height =
+        std::max(0.0, scroll_->getViewSize().getHeight());
+    const auto clamped_offset = std::max(0.0, offset);
+    const auto first = std::clamp(
+        static_cast<int>(std::floor(clamped_offset / layout::kPresetRowHeight)) -
+            kOverscanRows,
+        0, count);
+    const auto last = std::clamp(
+        static_cast<int>(std::ceil(
+            (clamped_offset + viewport_height) / layout::kPresetRowHeight)) +
+            kOverscanRows,
+        first, count);
+    return {first, last};
+  }
+
+  void HandleScrollChanged() {
+    if (rebuilding_ || scroll_ == nullptr) {
+      return;
+    }
+    const auto range = VisiblePresetRange(scroll_->getScrollOffset().y);
+    if (range.first == visible_first_ && range.second == visible_last_) {
+      return;
+    }
+    Rebuild(false, false);
+  }
+
   auto MakeAction(const CRect& rect, const char* text,
                   std::function<void()> action,
                   const ActionIcon icon = ActionIcon::kNone,
@@ -449,8 +517,11 @@ class PresetPanel final : public SurfacePanel, public IControlListener {
     return label;
   }
 
-  void Rebuild(const bool reveal_selected = false) {
+  void Rebuild(const bool reveal_selected = false,
+               const bool stabilize_offset = true) {
     const auto previous_offset = scroll_->getScrollOffset();
+    const auto was_rebuilding = rebuilding_;
+    rebuilding_ = true;
     // CScrollView applies its offset directly to child rectangles. New
     // children are created in local coordinates, so clear the old offset
     // before removing/recreating rows or they can appear shifted/overlapped.
@@ -458,12 +529,15 @@ class PresetPanel final : public SurfacePanel, public IControlListener {
     scroll_->removeAll(true);
     constexpr auto kRowHeight = layout::kPresetRowHeight;
     const auto row_width = scroll_->getViewSize().getWidth();
-    for (auto i = 0; i < static_cast<int>(presets_.size()); ++i) {
+    const auto visible_range = VisiblePresetRange(previous_offset.y);
+    visible_first_ = visible_range.first;
+    visible_last_ = visible_range.second;
+    for (auto i = visible_first_; i < visible_last_; ++i) {
       if (i == editing_) {
         auto* const edit = new PresetRenameTextEdit(
             CRect(0, i * kRowHeight, row_width,
                   i * kRowHeight + kRowHeight - layout::kPresetRowBottomGap),
-            this, i, presets_[i].name.c_str(), nullptr,
+            this, i, CurrentPresets()[i].name.c_str(), nullptr,
             CParamDisplay::kNoFrame);
         edit->setBackColor(theme::kPresetTabSelected);
         edit->setFont(bold_font_);
@@ -485,7 +559,7 @@ class PresetPanel final : public SurfacePanel, public IControlListener {
       auto* const row = MakeAction(
           CRect(0, i * kRowHeight, row_width - layout::kPresetRowDeleteWidth,
                 i * kRowHeight + kRowHeight - layout::kPresetRowBottomGap),
-          presets_[i].name.c_str(), [this, i]() {
+          CurrentPresets()[i].name.c_str(), [this, i]() {
             const auto was_armed = delete_armed_preset_ != -1;
             if (delete_armed_preset_ != i) {
               delete_armed_preset_ = -1;
@@ -497,7 +571,8 @@ class PresetPanel final : public SurfacePanel, public IControlListener {
             // MakeAction already invokes this after the mouse event. Applying
             // another deferral here leaves the selection pending until the
             // next UI event and can overwrite a subsequent slider change.
-            if (apply_ && i >= 0 && i < static_cast<int>(presets_.size())) {
+            if (apply_ && i >= 0 &&
+                i < static_cast<int>(CurrentPresets().size())) {
               apply_(i);
             }
             if (was_armed) {
@@ -519,7 +594,7 @@ class PresetPanel final : public SurfacePanel, public IControlListener {
         delete_armed_preset_ = -1;
         const auto offset = static_cast<int>(std::round(distance / kRowHeight));
         const auto destination = std::clamp(
-            i + offset, 0, static_cast<int>(presets_.size()) - 1);
+            i + offset, 0, static_cast<int>(CurrentPresets().size()) - 1);
         if (destination == i || !reorder_) return;
         if (auto* const frame = getFrame()) {
           frame->doAfterEventProcessing(
@@ -567,10 +642,10 @@ class PresetPanel final : public SurfacePanel, public IControlListener {
     }
     const auto content_height =
         std::max(scroll_->getViewSize().getHeight(),
-                 static_cast<double>(presets_.size()) * kRowHeight);
+                 static_cast<double>(CurrentPresets().size()) * kRowHeight);
     scroll_->setContainerSize(CRect(0, 0, row_width, content_height));
     if (reveal_selected && selected_ >= 0 &&
-        selected_ < static_cast<int>(presets_.size())) {
+        selected_ < static_cast<int>(CurrentPresets().size())) {
       // The list view is rebuilt after selection changes. Explicitly place
       // the selected row inside the viewport; CScrollView does not
       // automatically reveal newly added children.
@@ -584,7 +659,7 @@ class PresetPanel final : public SurfacePanel, public IControlListener {
       // offset. This keeps the newest preset at the bottom even when the
       // row is only partially beyond the viewport.
       const auto target_offset =
-          selected_ == static_cast<int>(presets_.size()) - 1
+          selected_ == static_cast<int>(CurrentPresets().size()) - 1
               ? max_offset
               : (row_bottom > visible_bottom
                      ? std::min(max_offset, row_bottom - viewport_height)
@@ -593,10 +668,16 @@ class PresetPanel final : public SurfacePanel, public IControlListener {
     } else {
       const auto max_offset = std::max(
           0.0, content_height - scroll_->getViewSize().getHeight());
-      scroll_->SetStableScrollOffset(
-          CPoint(0, std::clamp(previous_offset.y, 0.0, max_offset)));
+      const auto target_offset =
+          CPoint(0, std::clamp(previous_offset.y, 0.0, max_offset));
+      if (stabilize_offset) {
+        scroll_->SetStableScrollOffset(target_offset);
+      } else {
+        scroll_->setScrollOffset(target_offset);
+      }
     }
     scroll_->invalid();
+    rebuilding_ = was_rebuilding;
   }
 
   void RebuildBankTabs() {
@@ -699,8 +780,10 @@ class PresetPanel final : public SurfacePanel, public IControlListener {
   bool reveal_new_bank_on_next_rebuild_ = false;
   int editing_bank_ = -1;
   int delete_armed_bank_ = -1;
-  std::vector<common::Preset> presets_;
-  std::vector<SharedPointer<CBitmap>> thumbnails_;
+  const std::vector<common::Preset>* preset_source_ = nullptr;
+  int visible_first_ = -1;
+  int visible_last_ = -1;
+  bool rebuilding_ = false;
   int selected_ = -1;
   int delete_armed_preset_ = -1;
   int editing_ = -1;

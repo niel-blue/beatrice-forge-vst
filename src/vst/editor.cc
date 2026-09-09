@@ -3936,29 +3936,9 @@ void Editor::RefreshPresetPanel(const int selected) {
   if (preset_panel_) {
     preset_panel_->SetBanks(preset_workspace_.banks,
                             preset_workspace_.selected_bank);
-    auto thumbnails = std::vector<SharedPointer<CBitmap>>(presets_.size());
-    if (model_config_.has_value()) {
-      auto* const controller = static_cast<Controller*>(getController());
-      const auto& model_value = *std::get<std::unique_ptr<std::u8string>>(
-          controller->core_.parameter_state_.GetValue(ParameterID::kModel));
-      const auto voice_count = common::GetVoiceCount(*model_config_);
-      for (auto i = 0; i < static_cast<int>(presets_.size()); ++i) {
-        if (presets_[i].model_path != model_value || presets_[i].voice < 0 ||
-            presets_[i].voice >= voice_count) {
-          continue;
-        }
-        const auto& portrait =
-            model_config_->voices[presets_[i].voice].portrait.path;
-        if (const auto it = portrait_menu_thumbnails_.find(portrait);
-            it != portrait_menu_thumbnails_.end()) {
-          thumbnails[i] = it->second;
-        }
-      }
-    }
     const auto visible_selected =
         active_preset_bank_ == preset_workspace_.selected_bank ? selected : -1;
-    preset_panel_->SetPresets(presets_, visible_selected,
-                              std::move(thumbnails));
+    preset_panel_->SetPresets(presets_, visible_selected);
   }
 }
 
