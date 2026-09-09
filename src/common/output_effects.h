@@ -9,6 +9,18 @@
 
 namespace beatrice::common {
 
+// Output denoiser control contract shared by the parameter schema, DSP and
+// editor.  A 20 kHz cutoff is the explicit bypass value for HF filtering.
+inline constexpr auto kDenoiseThresholdDefaultDb = -45.0;
+inline constexpr auto kDenoiseThresholdMinDb = -60.0;
+inline constexpr auto kDenoiseThresholdMaxDb = -10.0;
+inline constexpr auto kDenoiseReductionDefaultDb = 0.0;
+inline constexpr auto kDenoiseReductionMinDb = 0.0;
+inline constexpr auto kDenoiseReductionMaxDb = 24.0;
+inline constexpr auto kDenoiseHfCutDefaultHz = 20000.0;
+inline constexpr auto kDenoiseHfCutMinHz = 8000.0;
+inline constexpr auto kDenoiseHfCutMaxHz = 20000.0;
+
 // Shared post-conversion processing for the VST and future standalone client.
 // It is called after model conversion and before Output Gain. Every model-core
 // generation therefore uses the same effect implementation and saved values.
@@ -19,6 +31,9 @@ class OutputEffects {
   void SetSampleRate(double sample_rate);
   void SetDeMud(double amount) noexcept;
   void SetPresence(double amount) noexcept;
+  void SetDenoiseThreshold(double threshold_db) noexcept;
+  void SetDenoiseReduction(double reduction_db) noexcept;
+  void SetDenoiseHfCut(double frequency_hz) noexcept;
   void SetReverbMix(double mix) noexcept;
   void SetReverbDecay(double seconds) noexcept;
   void SetReverbTone(double tone) noexcept;
@@ -62,6 +77,7 @@ class OutputEffects {
   [[nodiscard]] auto LowPassCoefficient(double frequency) const -> double;
   void UpdateConfiguration();
   void UpdateReverbFeedbackTargets() noexcept;
+  void ProcessDenoise(float* samples, int n_samples) noexcept;
   void ProcessClarity(float* samples, int n_samples) noexcept;
   void ProcessReverb(float* left, float* right, int n_samples) noexcept;
 
@@ -79,6 +95,27 @@ class OutputEffects {
   double low_180_ = 0.0;
   double low_700_ = 0.0;
   double low_2500_ = 0.0;
+
+  // Output denoising is deliberately a small, zero-lookahead downward
+  // expander plus an optional high-frequency cutoff.  It sits before
+  // CLARITY so the presence boost cannot raise the residual noise floor.
+  double denoise_threshold_linear_target_ =
+      0.0056234132519034912;  // 10^(-45/20)
+  double denoise_threshold_linear_ = 0.0056234132519034912;
+  double denoise_reduction_db_target_ = kDenoiseReductionDefaultDb;
+  double denoise_min_gain_target_ = 1.0;
+  double denoise_min_gain_ = 1.0;
+  double denoise_hf_cut_hz_target_ = kDenoiseHfCutDefaultHz;
+  double denoise_hf_cut_coefficient_target_ = 1.0;
+  double denoise_hf_cut_coefficient_ = 1.0;
+  double denoise_envelope_attack_coefficient_ = 1.0;
+  double denoise_envelope_release_coefficient_ = 1.0;
+  double denoise_gain_up_coefficient_ = 1.0;
+  double denoise_gain_down_coefficient_ = 1.0;
+  double denoise_parameter_smoothing_step_ = 1.0;
+  double denoise_envelope_left_ = 0.0;
+  double denoise_gain_left_ = 1.0;
+  double denoise_hf_left_ = 0.0;
 
   double reverb_mix_target_ = 0.0;
   double reverb_mix_ = 0.0;

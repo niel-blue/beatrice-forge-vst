@@ -23,16 +23,77 @@ enum class RecordingMode {
   kStereoInputOutput,
 };
 
-inline constexpr std::array<const char*, 4> kRecordingModeLabels = {
-    "OFF", "Output", "Input/Output Separate", "Input/Output L-R"};
+// kOff is retained as a hidden compatibility value for states written by
+// older versions.  It is intentionally not exposed in either UI.
+inline constexpr std::array<const char*, 3> kRecordingModeLabels = {
+    "Output", "Input/Output Separate", "Input/Output L-R"};
+
+inline auto NormalizeRecordingMode(const RecordingMode mode) noexcept
+    -> RecordingMode {
+  switch (mode) {
+    case RecordingMode::kOutput:
+    case RecordingMode::kSeparateInputOutput:
+    case RecordingMode::kStereoInputOutput:
+      return mode;
+    case RecordingMode::kOff:
+    default:
+      // Older saved states used kOff as the default.  Recording now always
+      // starts from the Output mode, so migrate that value on read.
+      return RecordingMode::kOutput;
+  }
+}
+
+inline auto RecordingModeFromMenuIndex(const std::int32_t index) noexcept
+    -> RecordingMode {
+  switch (index) {
+    case 1:
+      return RecordingMode::kSeparateInputOutput;
+    case 2:
+      return RecordingMode::kStereoInputOutput;
+    case 0:
+    default:
+      return RecordingMode::kOutput;
+  }
+}
+
+inline auto RecordingModeToMenuIndex(const RecordingMode mode) noexcept
+    -> std::int32_t {
+  switch (NormalizeRecordingMode(mode)) {
+    case RecordingMode::kSeparateInputOutput:
+      return 1;
+    case RecordingMode::kStereoInputOutput:
+      return 2;
+    case RecordingMode::kOutput:
+    case RecordingMode::kOff:
+    default:
+      return 0;
+  }
+}
+
+// Gain applied to the additional input in the recording mix. The live
+// standalone output applies the same gain when routing ADD BGM, while the
+// converted voice output gain remains independent.
+inline constexpr double kMinAdditionalInputGainDb = -20.0;
+inline constexpr double kMaxAdditionalInputGainDb = 20.0;
+inline constexpr double kDefaultAdditionalInputGainDb = 0.0;
 
 struct RecordingSettings {
-  RecordingMode mode = RecordingMode::kOff;
+  RecordingMode mode = RecordingMode::kOutput;
   // The selected file name is used as a location hint. Recordings are written
   // beside it using the automatic Beatrice-Forge-Rec-* naming rule.
   std::filesystem::path base_path;
   double sample_rate = 48000.0;
+  // When enabled, the additional input is mixed into the recorded output
+  // channels only.  It never changes the host or monitor output path.
+  bool additional_input_enabled = false;
+  double additional_input_gain_db = kDefaultAdditionalInputGainDb;
+  // Legacy direct-recorder delay. Realtime host/standalone streams apply the
+  // same delay before their external-output/recording fan-out and pass zero
+  // here to avoid applying it twice.
+  std::uint32_t voice_delay_ms = 0;
 };
+
+inline constexpr std::uint32_t kMaxVoiceDelayMs = 200U;
 
 struct RecordingStatus {
   bool recording = false;
@@ -56,8 +117,9 @@ class AudioRecorder {
   auto Start(const RecordingSettings& settings) -> bool;
   void Stop();
 
-  void Push(float pre_conversion, float output_left,
-            float output_right) noexcept;
+  void Push(float pre_conversion, float output_left, float output_right,
+            float additional_input_left = 0.0F,
+            float additional_input_right = 0.0F) noexcept;
 
   [[nodiscard]] auto IsRecording() const -> bool {
     return recording_.load(std::memory_order_acquire);
@@ -69,6 +131,8 @@ class AudioRecorder {
     float pre_conversion = 0.0F;
     float output_left = 0.0F;
     float output_right = 0.0F;
+    float additional_input_left = 0.0F;
+    float additional_input_right = 0.0F;
   };
   class WaveWriter;
 
@@ -98,6 +162,8 @@ class AudioRecorder {
   std::unique_ptr<WaveWriter> input_writer_;
   std::unique_ptr<WaveWriter> output_writer_;
   std::unique_ptr<WaveWriter> stereo_writer_;
+  float additional_input_gain_ = 0.0F;
+  std::uint32_t voice_delay_frames_ = 0;
   mutable std::atomic_flag error_lock_ = ATOMIC_FLAG_INIT;
   std::string error_;
 };

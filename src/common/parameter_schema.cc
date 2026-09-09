@@ -16,6 +16,7 @@
 #include "common/controller_core.h"
 #include "common/error.h"
 #include "common/model_config.h"
+#include "common/output_effects.h"
 #include "common/processor_core.h"
 #include "common/processor_proxy.h"
 #include "common/simple_morph.h"
@@ -372,7 +373,7 @@ const ParameterSchema kSchema = [] {
            })},
       {ParameterID::kLightDenoise,
        ListParameter(
-           u8"Light Denoise"s, {u8"OFF"s, u8"LIGHT"s, u8"STANDARD"s},
+           u8"Light Denoise"s, {u8"Off"s, u8"Light"s, u8"Standard"s},
            0, u8"Denoise"s, parameter_flag::kCanAutomate | parameter_flag::kIsList,
            [](ControllerCore&, int) { return ErrorCode::kSuccess; },
            [](ProcessorProxy& vc, const int value) {
@@ -401,6 +402,33 @@ const ParameterSchema kSchema = [] {
            [](ControllerCore&, double) { return ErrorCode::kSuccess; },
            [](ProcessorProxy& vc, const double value) {
              return vc.GetCore()->SetPresence(value);
+           })},
+      {ParameterID::kDenoiseThreshold,
+       NumberParameter(
+           u8"Threshold"s, kDenoiseThresholdDefaultDb,
+           kDenoiseThresholdMinDb, kDenoiseThresholdMaxDb, u8"dB"s, 50,
+           u8"DenoiseTh"s, parameter_flag::kCanAutomate,
+           [](ControllerCore&, double) { return ErrorCode::kSuccess; },
+           [](ProcessorProxy& vc, const double value) {
+             return vc.GetCore()->SetDenoiseThreshold(value);
+           })},
+      {ParameterID::kDenoiseReduction,
+       NumberParameter(
+           u8"Reduction"s, kDenoiseReductionDefaultDb,
+           kDenoiseReductionMinDb, kDenoiseReductionMaxDb, u8"dB"s, 24,
+           u8"DenoiseRed"s, parameter_flag::kCanAutomate,
+           [](ControllerCore&, double) { return ErrorCode::kSuccess; },
+           [](ProcessorProxy& vc, const double value) {
+             return vc.GetCore()->SetDenoiseReduction(value);
+           })},
+      {ParameterID::kDenoiseHfCut,
+       NumberParameter(
+           u8"HF Cut"s, kDenoiseHfCutDefaultHz, kDenoiseHfCutMinHz,
+           kDenoiseHfCutMaxHz, u8"Hz"s, 12, u8"DenoiseHF"s,
+           parameter_flag::kCanAutomate,
+           [](ControllerCore&, double) { return ErrorCode::kSuccess; },
+           [](ProcessorProxy& vc, const double value) {
+             return vc.GetCore()->SetDenoiseHfCut(value);
            })},
       {ParameterID::kReverbMix,
        NumberParameter(

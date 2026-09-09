@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "common/output_effects.h"
 #include "common/voice_morph_state.h"
 
 namespace beatrice::common {
@@ -20,6 +21,9 @@ struct Preset {
   double input_gain = 0.0;
   double output_gain = 0.0;
   double compensated_drive = 0.0;
+  double denoise_threshold = kDenoiseThresholdDefaultDb;
+  double denoise_reduction = kDenoiseReductionDefaultDb;
+  double denoise_hf_cut = kDenoiseHfCutDefaultHz;
   double de_mud = 0.0;
   double presence = 0.0;
   double reverb_mix = 0.0;

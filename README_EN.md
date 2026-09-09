@@ -12,7 +12,7 @@ The model files and the non-public inference library are not included in this re
 
 ### Version history
 
-- **0.9.0**: Release
+- **0.9.1**: Added post-conversion Denoise (Threshold / Reduction / HF Cut) under EFFECTS. Added Application Input and Add BGM under IN/OUT so audio from another application can be mixed with converted voice for external output and recording. BGM Delay (-100 to +100 ms) corrects the relative timing.
 
 The current Forge release is based on Project Beatrice `2.0.0-rc.3`. The upstream version and the Forge product version are managed separately.
 
@@ -36,9 +36,13 @@ Hover over a control to display a tooltip explaining how to use it. Japanese hel
 
 - **Noise Reduction Boost** — Suppresses low-level noise that may occur with some models when needed.
 - **INPUT CLEANUP** — Low Cut reduces unwanted low-frequency content, Light Denoise gently reduces steady background noise, and De-click suppresses brief clicks and lip noise.
-- **EFFECTS** — De-Mud reduces muddiness, Presence adds clarity, and Reverb controls the amount, length, and tone of reverberation.
+- **EFFECTS** — Denoise suppresses noise in the converted voice after conversion with Threshold / Reduction / HF Cut. De-Mud reduces muddiness, Presence adds clarity, and Reverb controls the amount, length, and tone of reverberation.
 - **Input and converted-output level meters** — Show whether input and converted audio are present and indicate their approximate levels.
 - **Legacy-style morph interface** — Retains the familiar morph controls while displaying speaker names and weight values.
+
+### Application Input and BGM mixing
+
+Select audio from another application under INPUT SOURCE or ADD BGM on the IN/OUT tab. ADD BGM is mixed with the converted voice for the VST-specific external output and recording, while it is kept out of the host monitor output. BGM GAIN adjusts only the BGM level on those paths, and BGM Delay (-100 to +100 ms) corrects the relative timing between voice and BGM.
 
 ### VST-specific external output
 
@@ -50,10 +54,11 @@ The RECORDING section on the IN/OUT tab provides the following modes:
 
 | Mode | Recorded content |
 | --- | --- |
-| OFF | No recording |
 | Output | Converted output |
 | Input/Output Separate | Input and output in separate files |
 | Input/Output L-R | Input on the left channel and output on the right channel |
+
+The default is Output. Recording can always be started with the REC button.
 
 The default destination is the current user's Windows Music folder. Use BROWSE to change the destination or base filename. Files are created using the following names, depending on the selected mode:
 

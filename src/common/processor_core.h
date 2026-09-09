@@ -96,6 +96,18 @@ class ProcessorCoreBase {
     output_effects_.SetPresence(amount);
     return ErrorCode::kSuccess;
   }
+  virtual auto SetDenoiseThreshold(const double threshold_db) -> ErrorCode {
+    output_effects_.SetDenoiseThreshold(threshold_db);
+    return ErrorCode::kSuccess;
+  }
+  virtual auto SetDenoiseReduction(const double reduction_db) -> ErrorCode {
+    output_effects_.SetDenoiseReduction(reduction_db);
+    return ErrorCode::kSuccess;
+  }
+  virtual auto SetDenoiseHfCut(const double frequency_hz) -> ErrorCode {
+    output_effects_.SetDenoiseHfCut(frequency_hz);
+    return ErrorCode::kSuccess;
+  }
   virtual auto SetReverbMix(const double mix) -> ErrorCode {
     output_effects_.SetReverbMix(mix);
     return ErrorCode::kSuccess;

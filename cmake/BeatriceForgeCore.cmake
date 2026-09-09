@@ -22,6 +22,7 @@ function(beatrice_forge_add_core target_name source_root common_root
 
     add_library(${target_name} STATIC
         "${common_source_dir}/audio_engine.cc"
+        "${common_source_dir}/application_input.cc"
         "${common_source_dir}/audio_recorder.cc"
         "${common_source_dir}/recording_paths.cc"
         "${common_source_dir}/wasapi_device_catalog.cc"
@@ -45,6 +46,6 @@ function(beatrice_forge_add_core target_name source_root common_root
     target_link_libraries(${target_name} PUBLIC beatricelib)
     if(WIN32)
         target_link_libraries(${target_name} PUBLIC
-            ole32 propsys shell32 avrt)
+            ole32 propsys shell32 avrt mmdevapi)
     endif()
 endfunction()

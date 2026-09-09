@@ -30,7 +30,7 @@ namespace beatrice::ui {
     case ControlHelpID::kInputGain:
       return "変換前の音量を調整します。";
     case ControlHelpID::kOutputGain:
-      return "変換後の最終的な音量を調整します。";
+      return "変換後の音声だけの最終音量を調整します。ADD BGMの音量は変わりません。";
     case ControlHelpID::kNoiseReductionBoost:
       return "一部のモデルで低く唸るノイズが出るとき、値を上げることでノイズを軽減します。";
     case ControlHelpID::kLowCut:
@@ -83,6 +83,12 @@ namespace beatrice::ui {
       return "変換後の声の溜まった低中域を抑えて籠もりを軽減します。";
     case ControlHelpID::kPresence:
       return "変換後の声の高域を補い、輪郭を調整します。強くするとサ行やノイズが目立つ場合があります。";
+    case ControlHelpID::kDenoiseThreshold:
+      return "変換後の声に含まれる小さな音をノイズとして扱い始める基準です。上げるほど強く効きますが、語尾や小さな声も削れる場合があります。";
+    case ControlHelpID::kDenoiseReduction:
+      return "基準以下の音をどれだけ抑えるかを調整します。上げるほどノイズは減りますが、声の自然さが損なわれる場合があります。";
+    case ControlHelpID::kDenoiseHfCut:
+      return "設定した周波数より高い成分を抑えます。20 kHzでは無効です。高いジー音を抑えるときに下げます。";
     case ControlHelpID::kReverbMix:
       return "変換後の声に残響音（エコー）を加えます。";
     case ControlHelpID::kReverbDecay:
@@ -90,29 +96,43 @@ namespace beatrice::ui {
     case ControlHelpID::kReverbTone:
       return "残響音の明るさを調整します。上げるほど高域を残します。";
     case ControlHelpID::kInputSource:
-      return "マイクなどの音声入力と、音声ファイル入力を切り替えます。";
+      return "変換する音声の入力元を選びます。";
     case ControlHelpID::kInputDevice:
-      return "変換前の音声を受け取る入力機器を選びます。";
+      return "変換前の音声を入力するデバイスを選びます。";
     case ControlHelpID::kOutputDevice:
-      return "変換後の音声を出力する機器を選びます。";
+      return "変換後の音声を出力するデバイスを選びます。";
     case ControlHelpID::kMonitorDevice:
-      return "変換後の音声を確認する機器を選びます。";
+      return "変換後の音声を確認するデバイスを選びます。";
     case ControlHelpID::kAudioFileBrowse:
-      return "変換に使用する音声ファイルを選びます。";
+      return "変換元または追加音源として使用する音声ファイルを選びます。";
     case ControlHelpID::kAudioFilePlayback:
       return "音声ファイルの再生、一時停止、停止、ループを操作します。";
     case ControlHelpID::kAudioFileVolume:
-      return "音声ファイルの音量を調整します。";
+      return "選択中のAudio Filesの再生音量を調整します。変換元の場合は変換入力、追加音源の場合は外部出力・録音に反映されます。";
     case ControlHelpID::kAudioFileSeek:
       return "音声ファイルの再生位置を移動します。";
     case ControlHelpID::kRecordingMode:
-      return "変換後の音声の録音モードを選びます。";
+      return "録音する音声の組み合わせを選びます。";
     case ControlHelpID::kRecording:
-      return "選んだ録音モードで録音を開始・停止します。";
+      return "録音を開始・停止します。";
     case ControlHelpID::kRecordingBrowse:
-      return "録音ファイルの保存先と名前を指定します。";
+      return "録音ファイルの保存先を選びます。";
+    case ControlHelpID::kApplicationInputRefresh:
+      return "アプリケーションの候補を更新します。";
+    case ControlHelpID::kApplicationInput:
+      return "選択したアプリの音声を変換元にします。Offで無効です。";
+    case ControlHelpID::kAdditionalInput:
+      return "選択したApplication Inputを、変換音声とは別に録音へ追加します。通常の出力やモニターには送られません。";
+    case ControlHelpID::kAdditionalBgm:
+      return "選択したアプリの音声をBGMとして外部出力・録音に追加します。モニターには出力しません。";
+    case ControlHelpID::kBgmDelay:
+      return "変換音声とBGMのズレを修正します。変換音声が遅いときは値をプラス、BGMが遅いときは値をマイナス。";
+    case ControlHelpID::kRecordingApplicationInputGain:
+      return "録音に追加するアプリ音声の音量を調整します。";
+    case ControlHelpID::kBgmOutputGain:
+      return "BGMの外部出力・録音の音量を調整します。変換音声には影響しません。";
     case ControlHelpID::kVstOutputDevice:
-      return "変換後の音声を、選択したWASAPIデバイスへ追加出力します。ホスト側の出力は変更しません。\nホスト側でも同じ音声を出力している場合、二重に聞こえることがあります。";
+      return "変換音声とBGMを選択したデバイスへ出力します。ホスト出力は変わりません。";
     case ControlHelpID::kVstWasapiExclusive:
       return "選択したWASAPI出力デバイスを排他モードで使用します。使用中は、他のアプリケーションから同じデバイスを使用できない場合があります。";
     case ControlHelpID::kNone:

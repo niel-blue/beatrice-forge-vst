@@ -8,7 +8,7 @@ include_guard(GLOBAL)
 
 set(FORGE_VERSION_MAJOR 0)
 set(FORGE_VERSION_MINOR 9)
-set(FORGE_VERSION_PATCH 0)
+set(FORGE_VERSION_PATCH 1)
 set(FORGE_VERSION
     "${FORGE_VERSION_MAJOR}.${FORGE_VERSION_MINOR}.${FORGE_VERSION_PATCH}")
 
@@ -19,7 +19,7 @@ set(BEATRICE_AUTHOR_NAME "Niel")
 
 # Resolves the revision suffix in exactly the same way for both products.
 # BEATRICE_DEV_VERSION must be declared by the caller before invoking this
-# function.  Release builds retain only FORGE_VERSION (for example 0.9.0).
+# function.  Release builds retain only FORGE_VERSION (for example 0.9.1).
 function(beatrice_forge_resolve_build_version source_root)
     execute_process(
         COMMAND git rev-parse --short HEAD

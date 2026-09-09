@@ -7,6 +7,7 @@
 #include <cmath>
 #include <optional>
 
+#include "common/output_effects.h"
 #include "common/parameter_schema.h"
 
 namespace beatrice::vst::ui_limits {
@@ -35,7 +36,7 @@ struct SliderSpec {
     case common::ParameterID::kOutputGain:
       return Range{-20.0f, 20.0f};
     case common::ParameterID::kPitchShift:
-      return Range{-18.0f, 18.0f};
+      return Range{-24.0f, 24.0f};
     case common::ParameterID::kCompensatedDrive:
       return Range{0.0f, 20.0f};
     case common::ParameterID::kLowCutHz:
@@ -46,6 +47,15 @@ struct SliderSpec {
     case common::ParameterID::kReverbMix:
     case common::ParameterID::kReverbTone:
       return Range{0.0f, 100.0f};
+    case common::ParameterID::kDenoiseThreshold:
+      return Range{static_cast<float>(common::kDenoiseThresholdMinDb),
+                   static_cast<float>(common::kDenoiseThresholdMaxDb)};
+    case common::ParameterID::kDenoiseReduction:
+      return Range{static_cast<float>(common::kDenoiseReductionMinDb),
+                   static_cast<float>(common::kDenoiseReductionMaxDb)};
+    case common::ParameterID::kDenoiseHfCut:
+      return Range{static_cast<float>(common::kDenoiseHfCutMinHz),
+                   static_cast<float>(common::kDenoiseHfCutMaxHz)};
     case common::ParameterID::kReverbDecay:
       return Range{0.2f, 5.0f};
     case common::ParameterID::kAverageSourcePitch:
@@ -73,6 +83,11 @@ struct SliderSpec {
     case common::ParameterID::kReverbMix:
     case common::ParameterID::kReverbTone:
       return {0, 1.0f, 0.1f, 1.0f, 0.1f};
+    case common::ParameterID::kDenoiseThreshold:
+    case common::ParameterID::kDenoiseReduction:
+      return {0, 1.0f, 0.1f, 1.0f, 0.1f};
+    case common::ParameterID::kDenoiseHfCut:
+      return {0, 500.0f, 100.0f, 500.0f, 100.0f};
     case common::ParameterID::kReverbDecay:
       return {1, 0.1f, 0.1f, 0.5f, 0.1f};
     case common::ParameterID::kPitchShift:

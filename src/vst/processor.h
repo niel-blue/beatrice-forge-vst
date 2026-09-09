@@ -3,8 +3,10 @@
 #ifndef BEATRICE_VST_PROCESSOR_H_
 #define BEATRICE_VST_PROCESSOR_H_
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <map>
 #include <mutex>  // NOLINT(build/c++11)
 #include <optional>
@@ -18,7 +20,10 @@
 
 // Beatrice
 #include "common/audio_engine.h"
+#include "common/application_input.h"
 #include "common/audio_recorder.h"
+#include "common/input_source.h"
+#include "common/stereo_delay_line.h"
 #include "vst/direct_wasapi_output.h"
 
 namespace beatrice::vst {
@@ -66,21 +71,68 @@ class Processor : public Steinberg::Vst::AudioEffect {
   void SendRecordingStatusMessage();
   void SendDirectWasapiStatusMessage(DirectWasapiStatus status,
                                      const std::string& error);
+  void SendApplicationInputStatusMessage(common::ApplicationInputStatus status,
+                                          const std::string& error);
+  auto StartApplicationInput(common::ApplicationInput& capture,
+                             std::uint32_t& process_id,
+                             const std::string& identity) -> bool;
 
   std::mutex mtx_;
   common::AudioEngine audio_engine_;
   common::AudioRecorder recorder_;
   DirectWasapiOutput direct_wasapi_output_;
+  common::ApplicationInput application_input_;
+  common::ApplicationInput additional_application_input_;
+  bool application_input_enabled_ = false;
+  bool additional_input_enabled_ = false;
+  common::InputSource input_source_ = common::InputSource::kDawInput;
+  common::InputSource additional_input_source_ = common::InputSource::kOff;
+  std::string application_input_identity_;
+  std::uint32_t application_input_process_id_ = 0;
+  std::string additional_application_input_identity_;
+  std::uint32_t additional_application_input_process_id_ = 0;
+  std::filesystem::path input_file_path_;
+  std::filesystem::path additional_input_file_path_;
+  bool input_file_playing_ = false;
+  bool input_file_loop_ = false;
+  bool additional_file_playing_ = false;
+  bool additional_file_loop_ = false;
+  // The editor can change file volume while the realtime callback is active.
+  // Atomics keep that update lock-free and prevent a slider drag from making
+  // the callback observe a torn value.
+  std::atomic<double> input_file_volume_{1.0};
+  std::atomic<double> additional_file_volume_{1.0};
   std::optional<DirectWasapiConfig> direct_wasapi_config_;
-  common::RecordingMode recording_mode_ = common::RecordingMode::kOff;
+  common::RecordingMode recording_mode_ = common::RecordingMode::kOutput;
   std::filesystem::path recording_path_;
+  // Signed relative offset for the final BGM mix. Positive values delay BGM;
+  // negative values delay the converted voice.
+  std::int32_t recording_voice_delay_ms_ = 0;
+  double recording_additional_input_gain_db_ =
+      common::kDefaultAdditionalInputGainDb;
   // メモリ確保が挟まるのが望ましくないが……
   std::map<ParamID, ParamValue> unreflected_params_;
   double meter_sample_rate_ = 0.0;
   std::int64_t meter_frames_ = 0;
   float meter_input_peak_ = 0.0F;
   float meter_output_peak_ = 0.0F;
+  float meter_external_output_peak_ = 0.0F;
+  float meter_additional_input_peak_ = 0.0F;
   std::vector<float> input_meter_buffer_;
+  // ADD BGM is routed to the external output/recorder, not the host monitor
+  // output. Keep a separate block buffer for that post-conversion mix.
+  std::vector<float> mixed_output_left_;
+  std::vector<float> mixed_output_right_;
+  common::StereoDelayLine voice_delay_line_;
+  common::StereoDelayLine bgm_delay_line_;
+  bool voice_delay_active_ = false;
+  std::int32_t active_bgm_delay_ms_ = 0;
+  std::vector<float> application_input_buffer_;
+  std::vector<float> application_input_right_buffer_;
+  std::vector<float> additional_application_input_buffer_;
+  std::vector<float> additional_application_input_right_buffer_;
+  std::vector<float> delayed_additional_input_buffer_;
+  std::vector<float> delayed_additional_input_right_buffer_;
 };
 
 }  // namespace beatrice::vst

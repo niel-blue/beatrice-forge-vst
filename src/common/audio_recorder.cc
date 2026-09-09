@@ -5,9 +5,11 @@
 #include "common/branding.h"
 
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <cstring>
 #include <ctime>
+#include <deque>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -251,6 +253,31 @@ auto AudioRecorder::PrepareWriters(const RecordingSettings& settings) -> bool {
     SetError("The host sample rate is not available yet.");
     return false;
   }
+  if (!std::isfinite(settings.additional_input_gain_db) ||
+      settings.additional_input_gain_db < kMinAdditionalInputGainDb ||
+      settings.additional_input_gain_db > kMaxAdditionalInputGainDb) {
+    SetError("The additional input gain is invalid.");
+    return false;
+  }
+  if (settings.voice_delay_ms > kMaxVoiceDelayMs) {
+    SetError("The voice delay is invalid.");
+    return false;
+  }
+  voice_delay_frames_ = settings.additional_input_enabled
+                            ? static_cast<std::uint32_t>(std::clamp(
+                                  std::llround(
+                                      settings.sample_rate *
+                                      static_cast<double>(
+                                          settings.voice_delay_ms) /
+                                      1000.0),
+                                  0LL, static_cast<long long>(
+                                           std::numeric_limits<std::uint32_t>::max())))
+                            : 0U;
+  additional_input_gain_ = settings.additional_input_enabled
+                               ? static_cast<float>(std::pow(
+                                     10.0, settings.additional_input_gain_db /
+                                                 20.0))
+                               : 0.0F;
   std::error_code filesystem_error;
   const auto parent = settings.base_path.parent_path();
   if (!parent.empty()) {
@@ -324,7 +351,9 @@ auto AudioRecorder::Start(const RecordingSettings& settings) -> bool {
 }
 
 void AudioRecorder::Push(const float pre_conversion, const float output_left,
-                         const float output_right) noexcept {
+                         const float output_right,
+                         const float additional_input_left,
+                         const float additional_input_right) noexcept {
   if (!recording_.load(std::memory_order_acquire)) {
     return;
   }
@@ -336,11 +365,38 @@ void AudioRecorder::Push(const float pre_conversion, const float output_left,
   }
   queue_[write] = {.pre_conversion = pre_conversion,
                    .output_left = output_left,
-                   .output_right = output_right};
+                   .output_right = output_right,
+                   .additional_input_left = additional_input_left,
+                   .additional_input_right = additional_input_right};
   write_index_.store(next, std::memory_order_release);
 }
 
 void AudioRecorder::WriterLoop() {
+  struct DelayedVoiceFrame {
+    float left = 0.0F;
+    float right = 0.0F;
+  };
+  auto delayed_voice = std::deque<DelayedVoiceFrame>{};
+  const auto write_frame = [this](const float pre_conversion,
+                                  const float output_left,
+                                  const float output_right,
+                                  const float additional_input_left,
+                                  const float additional_input_right) {
+    const auto mixed_left =
+        output_left + additional_input_left * additional_input_gain_;
+    const auto mixed_right =
+        output_right + additional_input_right * additional_input_gain_;
+    if (settings_.mode == RecordingMode::kOutput) {
+      output_writer_->WriteStereo(mixed_left, mixed_right);
+    } else if (settings_.mode == RecordingMode::kSeparateInputOutput) {
+      input_writer_->WriteMono(pre_conversion);
+      output_writer_->WriteStereo(mixed_left, mixed_right);
+    } else if (settings_.mode == RecordingMode::kStereoInputOutput) {
+      stereo_writer_->WriteStereo(pre_conversion,
+                                  (mixed_left + mixed_right) * 0.5F);
+    }
+    frame_count_.fetch_add(1, std::memory_order_relaxed);
+  };
   while (recording_.load(std::memory_order_acquire) ||
          read_index_.load(std::memory_order_acquire) !=
              write_index_.load(std::memory_order_acquire)) {
@@ -351,17 +407,30 @@ void AudioRecorder::WriterLoop() {
     }
     const auto frame = queue_[read];
     read_index_.store((read + 1U) % queue_.size(), std::memory_order_release);
-    if (settings_.mode == RecordingMode::kOutput) {
-      output_writer_->WriteStereo(frame.output_left, frame.output_right);
-    } else if (settings_.mode == RecordingMode::kSeparateInputOutput) {
-      input_writer_->WriteMono(frame.pre_conversion);
-      output_writer_->WriteStereo(frame.output_left, frame.output_right);
-    } else if (settings_.mode == RecordingMode::kStereoInputOutput) {
-      stereo_writer_->WriteStereo(frame.pre_conversion,
-                                  (frame.output_left + frame.output_right) *
-                                      0.5F);
+    auto output_left = frame.output_left;
+    auto output_right = frame.output_right;
+    if (voice_delay_frames_ != 0U) {
+      delayed_voice.push_back({frame.output_left, frame.output_right});
+      if (delayed_voice.size() <= voice_delay_frames_) {
+        output_left = 0.0F;
+        output_right = 0.0F;
+      } else {
+        const auto delayed = delayed_voice.front();
+        delayed_voice.pop_front();
+        output_left = delayed.left;
+        output_right = delayed.right;
+      }
     }
-    frame_count_.fetch_add(1, std::memory_order_relaxed);
+    write_frame(frame.pre_conversion, output_left, output_right,
+                frame.additional_input_left, frame.additional_input_right);
+  }
+  // Preserve the final delayed voice samples instead of truncating the tail
+  // when recording stops.  The extra input is silent during this flush, and
+  // the separate input track receives zeroes for the same duration.
+  while (!delayed_voice.empty()) {
+    const auto delayed = delayed_voice.front();
+    delayed_voice.pop_front();
+    write_frame(0.0F, delayed.left, delayed.right, 0.0F, 0.0F);
   }
 }
 
@@ -391,6 +460,8 @@ void AudioRecorder::Stop() {
   stopping_.store(true, std::memory_order_release);
   FinalizeWriters();
   settings_ = {};
+  additional_input_gain_ = 0.0F;
+  voice_delay_frames_ = 0;
 }
 
 auto AudioRecorder::GetStatus() const -> RecordingStatus {

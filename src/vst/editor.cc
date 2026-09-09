@@ -3,6 +3,7 @@
 #include "vst/editor.h"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -86,6 +87,9 @@
 namespace beatrice::vst {
 
 namespace {
+
+inline constexpr std::array<const char*, 3> kVstRecordingModeLabels = {
+    "Output", "InOut Separate", "InOut L-R"};
 
 class ColumnFocusOptionMenu final : public TruncatingOptionMenu {
  public:
@@ -738,6 +742,8 @@ auto Editor::BuildFrame(void* const parent, const bool attach_to_platform,
   auto* const model_selector =
       new FileSelector(layout::HeaderModelSelectorRect(), this,
                        static_cast<int>(ParameterID::kModel), nullptr);
+  model_selector->SetInitialDirectoryProvider(
+      [this]() { return ModelDialogInitialDirectory(); });
   model_selector->setBackColor(kTransparentCColor);
   model_selector->setStyle(CParamDisplay::kNoFrame);
   model_selector->setFont(font_strong_);
@@ -833,7 +839,7 @@ auto Editor::BuildFrame(void* const parent, const bool attach_to_platform,
   add_list_slider(cleanup_panel,
                   static_cast<ParamID>(ParameterID::kLightDenoise),
                   layout::SettingsSliderRect(1),
-                  {"OFF", "LIGHT", "STANDARD"});
+                  {"Off", "Light", "Standard"});
   add_slider(cleanup_panel, static_cast<ParamID>(ParameterID::kDeClick),
              layout::SettingsSliderRect(2));
   add_action(cleanup_panel, layout::ResetButtonRect(), "RESET",
@@ -900,7 +906,7 @@ auto Editor::BuildFrame(void* const parent, const bool attach_to_platform,
   make_label(pitch_panel,
              layout::ControlLabelRect(layout::kControlLabelTop,
                                       layout::kControlLabelBottom),
-             "CONTROL", font_small_,
+             "Control", font_small_,
              theme::kItemLabel);
   add_option_menu(pitch_panel, static_cast<ParamID>(ParameterID::kLock),
                   layout::ControlMenuRect(layout::kControlMenuTop,
@@ -1282,6 +1288,27 @@ auto Editor::BuildFrame(void* const parent, const bool attach_to_platform,
   effects_panel_->SetFocusAction(
       [this]() { FocusColumnRoot(FocusColumn::kPresets); });
   effects_scroll_->addView(effects_panel_);
+  auto* const denoise_panel = add_panel(
+      effects_panel_,
+      layout::PanelRect(layout::kEffectsDenoisePanelTop,
+                        layout::kEffectsDenoisePanelBottom));
+  add_title(denoise_panel, layout::PanelTitleRect(180.0), "DENOISE");
+  add_slider(denoise_panel,
+             static_cast<ParamID>(ParameterID::kDenoiseThreshold),
+             layout::SettingsSliderRect(0));
+  add_slider(denoise_panel,
+             static_cast<ParamID>(ParameterID::kDenoiseReduction),
+             layout::SettingsSliderRect(1));
+  add_slider(denoise_panel, static_cast<ParamID>(ParameterID::kDenoiseHfCut),
+             layout::SettingsSliderRect(2));
+  add_action(denoise_panel, layout::ResetButtonRect(), "RESET",
+             [reset_parameters]() {
+                reset_parameters({
+                    static_cast<ParamID>(ParameterID::kDenoiseThreshold),
+                    static_cast<ParamID>(ParameterID::kDenoiseReduction),
+                    static_cast<ParamID>(ParameterID::kDenoiseHfCut),
+                });
+              }, theme::ActionRole::kAction);
   auto* const clarity_panel = add_panel(
       effects_panel_,
       layout::PanelRect(layout::kEffectsClarityPanelTop,
@@ -1357,10 +1384,305 @@ auto Editor::BuildFrame(void* const parent, const bool attach_to_platform,
     vst_inout_panel_->SetFocusAction(
         [this]() { FocusColumnRoot(FocusColumn::kPresets); });
     vst_inout_scroll_->addView(vst_inout_panel_);
+    make_label(vst_inout_panel_, layout::VstInOutInputTitleRect(), "INPUT",
+               font_heading_, theme::kSectionTitle);
+    make_label(vst_inout_panel_, layout::VstInOutInputSourceLabelRect(),
+               "Input Source", font_small_, theme::kText);
+    const auto input_source_rect = layout::VstInOutInputSourceMenuRect();
+    auto* const input_source_bmp = new MonotoneBitmap(
+        static_cast<int>(input_source_rect.getWidth()),
+        static_cast<int>(input_source_rect.getHeight()), theme::kMenuFill,
+        theme::kMenuFrame, layout::kDropdownCornerRadius);
+    vst_input_source_menu_ = new ColumnFocusOptionMenu(
+        input_source_rect, this, -1, input_source_bmp,
+        [this]() { FocusColumnRoot(FocusColumn::kPresets); });
+    input_source_bmp->forget();
+    vst_input_source_menu_->setFont(font_);
+    vst_input_source_menu_->setFontColor(theme::kMenuText);
+    vst_input_source_menu_->addEntry("DAW Input");
+    vst_input_source_menu_->addEntry("Application Input");
+    ApplyControlHelpTooltip(vst_input_source_menu_, ui::ControlHelpID::kInputSource,
+                             japanese_tooltips);
+    vst_inout_panel_->addView(vst_input_source_menu_);
+    auto* const input_source_chevron = new ChevronView(
+        layout::DropdownChevronRect(input_source_rect), theme::kMenuChevron);
+    vst_inout_panel_->addView(input_source_chevron);
+
+    vst_application_input_label_ =
+        make_label(vst_inout_panel_, layout::VstInOutApplicationLabelRect(),
+                  "Application Input", font_small_, theme::kText);
+    vst_application_input_refresh_button_ = add_action(
+        vst_inout_panel_,
+        layout::ApplicationInputRefreshRect(
+            layout::VstInOutApplicationLabelRect()),
+        "REFRESH", [this]() { RefreshVstApplicationInputs(); },
+        theme::ActionRole::kAction,
+        ui::ControlHelpID::kApplicationInputRefresh);
+    const auto application_rect = layout::VstInOutApplicationMenuRect();
+    auto* const application_bmp = new MonotoneBitmap(
+        static_cast<int>(application_rect.getWidth()),
+        static_cast<int>(application_rect.getHeight()), theme::kMenuFill,
+        theme::kMenuFrame, layout::kDropdownCornerRadius);
+    vst_application_input_menu_ = new ColumnFocusOptionMenu(
+        application_rect, this, -1, application_bmp,
+        [this]() { FocusColumnRoot(FocusColumn::kPresets); });
+    application_bmp->forget();
+    vst_application_input_menu_->setFont(font_);
+    vst_application_input_menu_->setFontColor(theme::kMenuText);
+    vst_application_input_menu_->addEntry("Off");
+    ApplyControlHelpTooltip(vst_application_input_menu_,
+                             ui::ControlHelpID::kApplicationInput,
+                             japanese_tooltips);
+    vst_inout_panel_->addView(vst_application_input_menu_);
+    vst_application_input_chevron_ = new ChevronView(
+        layout::DropdownChevronRect(application_rect), theme::kMenuChevron);
+    vst_application_input_chevron_->setMouseEnabled(false);
+    vst_inout_panel_->addView(vst_application_input_chevron_);
+    vst_application_input_level_ =
+        new LevelIndicator(layout::VstInOutApplicationMeterRect());
+    vst_application_input_level_->SetEnabled(false);
+    vst_inout_panel_->addView(vst_application_input_level_);
+
+    // The Audio Files player is retained below as legacy source for a possible
+    // future reintroduction, but is intentionally not part of the current UI.
+#if 0
+    const auto make_file_player = [&](const CRect& player_rect,
+                                      const bool additional) {
+      auto* const container = new CViewContainer(player_rect);
+      container->setBackgroundColor(kTransparentCColor);
+      container->setTransparency(true);
+      vst_inout_panel_->addView(container);
+      // The VST player container starts at the panel content inset, while
+      // the shared standalone player starts at the column origin. Translate
+      // the shared child rectangles once so both hosts retain identical
+      // global geometry and bar lengths.
+      const auto player_child_rect = [](CRect rect) {
+        rect.offset(-layout::kPanelContentInset, 0.0);
+        return rect;
+      };
+      auto* const open = add_action(
+          container, player_child_rect(layout::kStandaloneInOutFileOpenRect),
+          "OPEN",
+          [this, additional]() { OpenVstAudioFile(additional); },
+          theme::ActionRole::kAction, ui::ControlHelpID::kAudioFileBrowse);
+      auto* const name = make_label(
+          container, player_child_rect(layout::kStandaloneInOutFileNameRect),
+          "No audio file selected", font_small_, theme::kDisabledText,
+          CHoriTxtAlign::kRightText);
+      // Keep every player child in the same local coordinate system as the
+      // standalone player.  Previously the volume label lived on the outer
+      // container while the slider and seek bar were offset inside this
+      // playback view, putting VOL and its bar on different rows and making
+      // the seek bar look like an unexplained extra line.
+      auto* const playback = new CViewContainer(
+          layout::kStandaloneInOutFilePlaybackRect);
+      playback->setBackgroundColor(kTransparentCColor);
+      playback->setTransparency(true);
+      container->addView(playback);
+      const auto button = [&](const CRect& rect, ActionIcon icon,
+                              std::function<void()> action) {
+        auto* const label = add_action(playback, rect, "", std::move(action),
+                                       theme::ActionRole::kAction,
+                                       ui::ControlHelpID::kAudioFilePlayback);
+        label->SetIcon(icon);
+        return label;
+      };
+      auto* const play = button(
+          player_child_rect(layout::kStandaloneInOutPlayButtonRect),
+          ActionIcon::kPlay, [this, additional]() {
+            SetVstFilePlaying(additional, true);
+          });
+      auto* const pause = button(
+          player_child_rect(layout::kStandaloneInOutPauseButtonRect),
+          ActionIcon::kPause, [this, additional]() {
+            SetVstFilePlaying(additional, false);
+          });
+      auto* const stop = button(
+          player_child_rect(layout::kStandaloneInOutStopButtonRect),
+          ActionIcon::kStop, [this, additional]() {
+            StopVstFilePlayback(additional);
+          });
+      auto* const loop = button(
+          player_child_rect(layout::kStandaloneInOutLoopButtonRect),
+          ActionIcon::kLoop, [this, additional]() {
+            ToggleVstFileLoop(additional);
+          });
+      make_label(playback,
+                 player_child_rect(layout::kStandaloneInOutVolumeLabelRect),
+                 "VOL", font_small_, theme::kActionText,
+                 CHoriTxtAlign::kCenterText);
+      auto* const volume = new FileVolumeView(
+          player_child_rect(layout::kStandaloneInOutVolumeViewRect),
+          [this, additional]() {
+            return additional ? vst_additional_file_volume_
+                              : vst_input_file_volume_;
+          },
+          [this, additional](const double value) {
+            SetVstFileVolume(additional, value);
+          });
+      playback->addView(volume);
+      auto* const value = make_label(
+          playback,
+          player_child_rect(layout::kStandaloneInOutVolumeValueRect), "100%",
+          font_small_, theme::kActionText, CHoriTxtAlign::kRightText);
+      auto* const progress = new FileProgressView(
+          player_child_rect(layout::kStandaloneInOutProgressRect),
+          [this, additional]() {
+            return additional ? vst_additional_file_position_
+                               : vst_input_file_position_;
+          },
+          [this, additional](const double position) {
+            SeekVstFile(additional, position);
+          });
+      playback->addView(progress);
+      auto* const time = make_label(
+          playback, player_child_rect(layout::kStandaloneInOutTimeRect),
+          "0:00 / 0:00", font_small_, theme::kActionText,
+          CHoriTxtAlign::kRightText);
+      if (additional) {
+        vst_additional_file_controls_ = container;
+        vst_additional_file_name_label_ = name;
+        vst_additional_file_time_label_ = time;
+        vst_additional_file_volume_label_ = value;
+        vst_additional_file_progress_ = progress;
+        vst_additional_file_volume_view_ = volume;
+        vst_additional_file_open_button_ = open;
+        vst_additional_file_play_button_ = play;
+        vst_additional_file_pause_button_ = pause;
+        vst_additional_file_stop_button_ = stop;
+        vst_additional_file_loop_button_ = loop;
+      } else {
+        vst_input_file_controls_ = container;
+        vst_input_file_name_label_ = name;
+        vst_input_file_time_label_ = time;
+        vst_input_file_volume_label_ = value;
+        vst_input_file_progress_ = progress;
+        vst_input_file_volume_view_ = volume;
+        vst_input_file_open_button_ = open;
+        vst_input_file_play_button_ = play;
+        vst_input_file_pause_button_ = pause;
+        vst_input_file_stop_button_ = stop;
+        vst_input_file_loop_button_ = loop;
+      }
+      container->setVisible(false);
+      container->setMouseEnabled(false);
+    };
+    make_file_player(layout::VstInOutApplicationFilePlayerRect(), false);
+#endif
+
+    make_label(vst_inout_panel_,
+               layout::VstInOutAdditionalInputSourceLabelRect(), "Add BGM",
+               font_small_, theme::kText);
+    vst_additional_input_refresh_button_ = add_action(
+        vst_inout_panel_,
+        layout::ApplicationInputRefreshRect(
+            layout::VstInOutAdditionalInputSourceLabelRect()),
+        "REFRESH", [this]() { RefreshVstApplicationInputs(); },
+        theme::ActionRole::kAction, ui::ControlHelpID::kApplicationInputRefresh);
+    const auto additional_source_rect =
+        layout::VstInOutAdditionalInputSourceMenuRect();
+    auto* const additional_source_bmp = new MonotoneBitmap(
+        static_cast<int>(additional_source_rect.getWidth()),
+        static_cast<int>(additional_source_rect.getHeight()), theme::kMenuFill,
+        theme::kMenuFrame, layout::kDropdownCornerRadius);
+    vst_additional_input_source_menu_ = new ColumnFocusOptionMenu(
+        additional_source_rect, this, -1, additional_source_bmp,
+        [this]() { FocusColumnRoot(FocusColumn::kPresets); });
+    additional_source_bmp->forget();
+    vst_additional_input_source_menu_->setFont(font_);
+    vst_additional_input_source_menu_->setFontColor(theme::kMenuText);
+    vst_additional_input_source_menu_->addEntry("Off");
+    ApplyControlHelpTooltip(vst_additional_input_source_menu_,
+                             ui::ControlHelpID::kAdditionalBgm,
+                             japanese_tooltips);
+    vst_inout_panel_->addView(vst_additional_input_source_menu_);
+    vst_additional_input_source_chevron_ = new ChevronView(
+        layout::DropdownChevronRect(additional_source_rect),
+        theme::kMenuChevron);
+    vst_inout_panel_->addView(vst_additional_input_source_chevron_);
+    vst_recording_application_input_level_ =
+        new LevelIndicator(layout::VstInOutAdditionalApplicationMeterRect());
+    vst_recording_application_input_level_->SetEnabled(false);
+    vst_inout_panel_->addView(vst_recording_application_input_level_);
+#if 0
+    make_file_player(layout::VstInOutAdditionalFilePlayerRect(), true);
+#endif
+
+    const auto bgm_gain_rect = layout::VstInOutAdditionalInputGainRect();
+    auto* const bgm_gain_bmp = new MonotoneBitmap(
+        static_cast<int>(bgm_gain_rect.getWidth()),
+        static_cast<int>(bgm_gain_rect.getHeight()), kTransparentCColor,
+        kTransparentCColor);
+    auto* const bgm_gain_handle_bmp = new MonotoneBitmap(
+        kSliderKnobWidth, 22, theme::kSliderHandle, kTransparentCColor);
+    vst_recording_application_input_gain_slider_ = new Slider(
+        bgm_gain_rect, this, kRecordingApplicationInputGainControlTag,
+        static_cast<int>(bgm_gain_rect.left),
+        static_cast<int>(bgm_gain_rect.right -
+                         bgm_gain_handle_bmp->getWidth()),
+        bgm_gain_handle_bmp, bgm_gain_bmp, "dB", font_small_, font_bold_,
+        "BGM Gain", 1);
+    vst_recording_application_input_gain_slider_->setMin(
+        static_cast<float>(common::kMinAdditionalInputGainDb));
+    vst_recording_application_input_gain_slider_->setMax(
+        static_cast<float>(common::kMaxAdditionalInputGainDb));
+    vst_recording_application_input_gain_slider_->setDefaultValue(
+        static_cast<float>(common::kDefaultAdditionalInputGainDb));
+    vst_recording_application_input_gain_slider_->setValue(
+        static_cast<float>(vst_recording_application_input_gain_db_));
+    vst_recording_application_input_gain_slider_->setWheelInc(0.5F);
+    vst_recording_application_input_gain_slider_->setFineWheelInc(0.1F);
+    vst_recording_application_input_gain_slider_->SetKeyboardInc(0.5F);
+    vst_recording_application_input_gain_slider_->SetKeyboardFineInc(0.1F);
+    vst_recording_application_input_gain_slider_->SetWheelEditingEnabled(
+        false);
+    vst_recording_application_input_gain_slider_->SetFocusChangedAction(
+        [this]() { SetFocusedColumn(FocusColumn::kPresets); });
+    ApplyControlHelpTooltip(
+        vst_recording_application_input_gain_slider_,
+        ui::ControlHelpID::kBgmOutputGain, japanese_tooltips);
+    vst_inout_panel_->addView(vst_recording_application_input_gain_slider_);
+    bgm_gain_bmp->forget();
+    bgm_gain_handle_bmp->forget();
+
+    const auto bgm_delay_rect = layout::VstInOutVoiceDelayRect();
+    auto* const bgm_delay_bmp = new MonotoneBitmap(
+        static_cast<int>(bgm_delay_rect.getWidth()),
+        static_cast<int>(bgm_delay_rect.getHeight()), kTransparentCColor,
+        kTransparentCColor);
+    auto* const bgm_delay_handle_bmp = new MonotoneBitmap(
+        kSliderKnobWidth, 22, theme::kSliderHandle, kTransparentCColor);
+    vst_voice_delay_slider_ = new Slider(
+        bgm_delay_rect, this, kRecordingVoiceDelayControlTag,
+        static_cast<int>(bgm_delay_rect.left),
+        static_cast<int>(bgm_delay_rect.right -
+                         bgm_delay_handle_bmp->getWidth()),
+        bgm_delay_handle_bmp, bgm_delay_bmp, "ms", font_small_, font_bold_,
+        "BGM Delay", 0);
+    vst_voice_delay_slider_->setMin(
+        static_cast<float>(common::kMinBgmDelayMs));
+    vst_voice_delay_slider_->setMax(
+        static_cast<float>(common::kMaxBgmDelayMs));
+    vst_voice_delay_slider_->setDefaultValue(0.0F);
+    vst_voice_delay_slider_->setValue(0.0F);
+    vst_voice_delay_slider_->setWheelInc(1.0F);
+    vst_voice_delay_slider_->setFineWheelInc(1.0F);
+    vst_voice_delay_slider_->SetKeyboardInc(1.0F);
+    vst_voice_delay_slider_->SetKeyboardFineInc(1.0F);
+    vst_voice_delay_slider_->SetWheelEditingEnabled(false);
+    vst_voice_delay_slider_->SetFocusChangedAction(
+        [this]() { SetFocusedColumn(FocusColumn::kPresets); });
+    ApplyControlHelpTooltip(vst_voice_delay_slider_,
+                            ui::ControlHelpID::kBgmDelay,
+                            japanese_tooltips);
+    vst_inout_panel_->addView(vst_voice_delay_slider_);
+    bgm_delay_bmp->forget();
+    bgm_delay_handle_bmp->forget();
+
     make_label(vst_inout_panel_, layout::VstInOutTitleRect(), "OUTPUT",
                font_heading_, theme::kSectionTitle);
     make_label(vst_inout_panel_, layout::VstInOutOutputLabelRect(),
-               "OUTPUT DEVICE", font_small_, theme::kText);
+               "Output Source", font_small_, theme::kText);
     const auto output_menu_rect = layout::VstInOutOutputMenuRect();
     auto* const output_bmp = new MonotoneBitmap(
         static_cast<int>(output_menu_rect.getWidth()),
@@ -1372,7 +1694,7 @@ auto Editor::BuildFrame(void* const parent, const bool attach_to_platform,
     output_bmp->forget();
     vst_output_device_menu_->setFont(font_);
     vst_output_device_menu_->setFontColor(theme::kMenuText);
-    vst_output_device_menu_->addEntry("OFF");
+    vst_output_device_menu_->addEntry("Off");
     ApplyControlHelpTooltip(vst_output_device_menu_,
                              ui::ControlHelpID::kVstOutputDevice,
                              japanese_tooltips);
@@ -1385,23 +1707,10 @@ auto Editor::BuildFrame(void* const parent, const bool attach_to_platform,
     vst_output_level_->SetEnabled(false);
     vst_inout_panel_->addView(vst_output_level_);
 
-    vst_exclusive_checkbox_ = new VSTGUI::CCheckBox(
-        layout::VstInOutExclusiveRect(), this, -1, "WASAPI EXCLUSIVE");
-    vst_exclusive_checkbox_->setFont(font_small_);
-    vst_exclusive_checkbox_->setFontColor(theme::kText);
-    vst_exclusive_checkbox_->setBoxFrameColor(theme::kMenuFrame);
-    vst_exclusive_checkbox_->setBoxFillColor(theme::kMenuFill);
-    vst_exclusive_checkbox_->setCheckMarkColor(theme::kAccent);
-    vst_exclusive_checkbox_->setValue(0.0F);
-    ApplyControlHelpTooltip(vst_exclusive_checkbox_,
-                             ui::ControlHelpID::kVstWasapiExclusive,
-                             japanese_tooltips);
-    vst_inout_panel_->addView(vst_exclusive_checkbox_);
-
     const auto recording_layout = layout::VstInOutRecordingGeometry();
     add_title(vst_inout_panel_, recording_layout.title, "RECORDING");
     make_label(vst_inout_panel_, recording_layout.mode_label,
-               "RECORDING MODE", font_small_, theme::kText);
+               "Recording Mode", font_small_, theme::kText);
     const auto recording_menu_rect = recording_layout.mode_menu;
     auto* const recording_bmp = new MonotoneBitmap(
         static_cast<int>(recording_menu_rect.getWidth()),
@@ -1413,7 +1722,7 @@ auto Editor::BuildFrame(void* const parent, const bool attach_to_platform,
     recording_bmp->forget();
     vst_recording_mode_menu_->setFont(font_);
     vst_recording_mode_menu_->setFontColor(theme::kMenuText);
-    for (const auto* const label : common::kRecordingModeLabels) {
+    for (const auto* const label : kVstRecordingModeLabels) {
       vst_recording_mode_menu_->addEntry(label);
     }
     ApplyControlHelpTooltip(vst_recording_mode_menu_,
@@ -1447,16 +1756,69 @@ auto Editor::BuildFrame(void* const parent, const bool attach_to_platform,
     if (controller != nullptr) {
       controller->GetRecordingSelection(vst_recording_mode_,
                                         vst_recording_path_);
+      vst_recording_application_input_gain_db_ =
+          controller->GetRecordingAdditionalInputGain();
+      vst_voice_delay_ms_ = controller->GetRecordingVoiceDelay();
     }
     if (vst_recording_path_.empty()) {
       vst_recording_path_ =
           common::MusicDirectory() /
           std::string(common::kDefaultRecordingBaseName);
     }
+    vst_recording_mode_ =
+        common::NormalizeRecordingMode(vst_recording_mode_);
     static_cast<void>(vst_recording_mode_menu_->setCurrent(
-        static_cast<int>(vst_recording_mode_)));
+        common::RecordingModeToMenuIndex(vst_recording_mode_)));
+    if (vst_voice_delay_slider_ != nullptr) {
+      vst_voice_delay_slider_->setValue(
+          static_cast<float>(vst_voice_delay_ms_));
+    }
+    if (vst_recording_application_input_gain_slider_ != nullptr) {
+      vst_recording_application_input_gain_slider_->setValue(
+          static_cast<float>(vst_recording_application_input_gain_db_));
+    }
+    if (vst_input_source_menu_ != nullptr) {
+      if (controller != nullptr) {
+        controller->GetApplicationInputIdentity(vst_application_input_identity_);
+        controller->GetAdditionalApplicationInputIdentity(
+            vst_additional_input_identity_);
+        controller->GetInputSource(vst_input_source_, vst_input_file_path_);
+        controller->GetAdditionalInputSource(vst_additional_input_source_,
+                                              vst_additional_file_path_);
+        controller->GetInputFileState(vst_input_file_playing_,
+                                      vst_input_file_loop_,
+                                      vst_input_file_volume_);
+        controller->GetAdditionalInputFileState(
+            vst_additional_file_playing_, vst_additional_file_loop_,
+            vst_additional_file_volume_);
+        auto input_position = 0.0F;
+        [[maybe_unused]] auto input_length = 0.0F;
+        auto additional_position = 0.0F;
+        [[maybe_unused]] auto additional_length = 0.0F;
+        controller->GetAudioFilePositions(
+            input_position, input_length, additional_position,
+            additional_length);
+        vst_input_file_position_ = input_position;
+        vst_additional_file_position_ = additional_position;
+      }
+      const auto input_index =
+          vst_input_source_ == common::InputSource::kApplicationInput ? 1 : 0;
+      static_cast<void>(vst_input_source_menu_->setCurrent(input_index));
+      if (vst_additional_input_source_menu_ != nullptr) {
+        const auto additional_index =
+            vst_additional_input_source_ ==
+                    common::InputSource::kApplicationInput
+                ? 1
+                : 0;
+        static_cast<void>(vst_additional_input_source_menu_->setCurrent(
+            additional_index));
+      }
+      UpdateVstFileControls(false);
+      UpdateVstFileControls(true);
+    }
     UpdateVstRecordingControls();
     RefreshVstWasapiDevices();
+    RefreshVstApplicationInputs();
   }
 
   const auto right_tab_rect = [this](const int index) {
@@ -1594,11 +1956,47 @@ void PLUGIN_API Editor::close() {
     standalone_inout_panel_ = nullptr;
     vst_inout_scroll_ = nullptr;
     vst_inout_panel_ = nullptr;
+    vst_input_source_menu_ = nullptr;
+    vst_application_input_menu_ = nullptr;
+    vst_application_input_chevron_ = nullptr;
+    vst_application_input_label_ = nullptr;
+    vst_application_input_refresh_button_ = nullptr;
+    vst_application_input_level_ = nullptr;
+    vst_input_file_controls_ = nullptr;
+    vst_input_file_name_label_ = nullptr;
+    vst_input_file_time_label_ = nullptr;
+    vst_input_file_volume_label_ = nullptr;
+    vst_input_file_progress_ = nullptr;
+    vst_input_file_volume_view_ = nullptr;
+    vst_input_file_open_button_ = nullptr;
+    vst_input_file_play_button_ = nullptr;
+    vst_input_file_pause_button_ = nullptr;
+    vst_input_file_stop_button_ = nullptr;
+    vst_input_file_loop_button_ = nullptr;
     vst_output_device_menu_ = nullptr;
-    vst_exclusive_checkbox_ = nullptr;
+    vst_additional_input_source_menu_ = nullptr;
+    vst_additional_input_source_chevron_ = nullptr;
+    vst_additional_input_refresh_button_ = nullptr;
+    vst_recording_application_input_level_ = nullptr;
+    vst_additional_file_controls_ = nullptr;
+    vst_additional_file_name_label_ = nullptr;
+    vst_additional_file_time_label_ = nullptr;
+    vst_additional_file_volume_label_ = nullptr;
+    vst_additional_file_progress_ = nullptr;
+    vst_additional_file_volume_view_ = nullptr;
+    vst_additional_file_open_button_ = nullptr;
+    vst_additional_file_play_button_ = nullptr;
+    vst_additional_file_pause_button_ = nullptr;
+    vst_additional_file_stop_button_ = nullptr;
+    vst_additional_file_loop_button_ = nullptr;
     vst_output_level_ = nullptr;
     vst_output_device_ids_.clear();
+    vst_application_inputs_.clear();
+    vst_application_input_process_id_ = 0;
+    vst_additional_input_process_id_ = 0;
     vst_recording_mode_menu_ = nullptr;
+    vst_recording_application_input_gain_slider_ = nullptr;
+    vst_voice_delay_slider_ = nullptr;
     vst_record_button_ = nullptr;
     vst_record_path_button_ = nullptr;
     vst_recording_status_label_ = nullptr;
@@ -1732,7 +2130,8 @@ void Editor::ShowDescriptionPopup(const DescriptionTarget target,
   }
 }
 
-void Editor::SetAudioLevels(const float input_peak, const float output_peak) {
+void Editor::SetAudioLevels(const float input_peak, const float output_peak,
+                            const float external_output_peak) {
   if (input_level_ != nullptr) {
     input_level_->SetPeak(input_peak);
   }
@@ -1740,7 +2139,27 @@ void Editor::SetAudioLevels(const float input_peak, const float output_peak) {
     output_level_->SetPeak(output_peak);
   }
   if (vst_output_level_ != nullptr) {
-    vst_output_level_->SetPeak(output_peak);
+    vst_output_level_->SetPeak(external_output_peak >= 0.0F
+                                   ? external_output_peak
+                                   : output_peak);
+  }
+  if (vst_application_input_level_ != nullptr) {
+    // The application meter is a capture-status indicator, not the general
+    // conversion input meter. In particular, an "Off" selection must not
+    // inherit movement from DAW input or the converted voice path.
+    const auto application_selected =
+        vst_input_source_menu_ != nullptr &&
+        vst_input_source_menu_->getCurrentIndex() == 1 &&
+        vst_application_input_menu_ != nullptr &&
+        vst_application_input_menu_->getCurrentIndex() > 0;
+    vst_application_input_level_->SetPeak(application_selected ? input_peak
+                                                                  : 0.0F);
+  }
+}
+
+void Editor::SetRecordingApplicationInputLevel(const float peak) {
+  if (vst_recording_application_input_level_ != nullptr) {
+    vst_recording_application_input_level_->SetPeak(peak);
   }
 }
 
@@ -1753,6 +2172,9 @@ void Editor::SyncVstExternalState() {
     return;
   }
   controller->GetRecordingSelection(vst_recording_mode_, vst_recording_path_);
+  vst_recording_application_input_gain_db_ =
+      controller->GetRecordingAdditionalInputGain();
+  vst_voice_delay_ms_ = controller->GetRecordingVoiceDelay();
   if (vst_recording_path_.empty()) {
     vst_recording_path_ = common::MusicDirectory() /
                           std::string(common::kDefaultRecordingBaseName);
@@ -1760,10 +2182,67 @@ void Editor::SyncVstExternalState() {
   if (vst_output_device_menu_ != nullptr) {
     RefreshVstWasapiDevices();
   }
+  if (vst_input_source_menu_ != nullptr) {
+    std::string application_identity;
+    controller->GetApplicationInputSelection(application_identity);
+    controller->GetApplicationInputIdentity(vst_application_input_identity_);
+    controller->GetAdditionalApplicationInputIdentity(
+        vst_additional_input_identity_);
+    controller->GetInputSource(vst_input_source_, vst_input_file_path_);
+    controller->GetAdditionalInputSource(vst_additional_input_source_,
+                                         vst_additional_file_path_);
+    controller->GetInputFileState(vst_input_file_playing_,
+                                  vst_input_file_loop_,
+                                  vst_input_file_volume_);
+    controller->GetAdditionalInputFileState(
+        vst_additional_file_playing_, vst_additional_file_loop_,
+        vst_additional_file_volume_);
+    auto input_position = 0.0F;
+    [[maybe_unused]] auto input_length = 0.0F;
+    auto additional_position = 0.0F;
+    [[maybe_unused]] auto additional_length = 0.0F;
+    controller->GetAudioFilePositions(input_position, input_length,
+                                      additional_position, additional_length);
+    vst_input_file_position_ = input_position;
+    vst_additional_file_position_ = additional_position;
+    if (vst_input_source_ == common::InputSource::kDawInput &&
+        !application_identity.empty()) {
+      vst_input_source_ = common::InputSource::kApplicationInput;
+    }
+    const auto input_index =
+        vst_input_source_ == common::InputSource::kApplicationInput ? 1 : 0;
+    static_cast<void>(vst_input_source_menu_->setCurrent(input_index));
+    if (vst_additional_input_source_menu_ != nullptr) {
+      const auto additional_index =
+          vst_additional_input_source_ == common::InputSource::kApplicationInput
+              ? 1
+              : 0;
+      static_cast<void>(vst_additional_input_source_menu_->setCurrent(
+          additional_index));
+    }
+    UpdateVstApplicationInputControls();
+    UpdateVstAdditionalInputControls();
+    UpdateVstFileControls(false);
+    UpdateVstFileControls(true);
+  }
+  if (vst_application_input_menu_ != nullptr) {
+    RefreshVstApplicationInputs();
+  }
   if (vst_recording_mode_menu_ != nullptr) {
+    vst_recording_mode_ =
+        common::NormalizeRecordingMode(vst_recording_mode_);
     static_cast<void>(vst_recording_mode_menu_->setCurrent(
-        static_cast<int>(vst_recording_mode_)));
+        common::RecordingModeToMenuIndex(vst_recording_mode_)));
     UpdateVstRecordingControls();
+  }
+  if (vst_voice_delay_slider_ != nullptr) {
+    vst_voice_delay_slider_->setValue(static_cast<float>(vst_voice_delay_ms_));
+    vst_voice_delay_slider_->invalid();
+  }
+  if (vst_recording_application_input_gain_slider_ != nullptr) {
+    vst_recording_application_input_gain_slider_->setValue(
+        static_cast<float>(vst_recording_application_input_gain_db_));
+    vst_recording_application_input_gain_slider_->invalid();
   }
 }
 
@@ -1771,14 +2250,64 @@ void Editor::PollAudioLevels() {
   if (standalone_frame_ || frame == nullptr) {
     return;
   }
+  const auto main_application_input_enabled =
+      vst_input_source_menu_ != nullptr &&
+      vst_input_source_menu_->getCurrentIndex() == 1;
+  const auto additional_application_input_enabled =
+      vst_additional_input_source_menu_ != nullptr &&
+      vst_additional_input_source_menu_->getCurrentIndex() > 0;
+  if (main_application_input_enabled ||
+      additional_application_input_enabled) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= next_application_input_refresh_) {
+      RefreshVstApplicationInputs();
+      next_application_input_refresh_ = now + std::chrono::seconds(1);
+    }
+  }
   auto* const controller = static_cast<Controller*>(getController());
   if (controller == nullptr) {
     return;
   }
   float input_peak = 0.0F;
   float output_peak = 0.0F;
-  controller->GetAudioLevels(input_peak, output_peak);
-  SetAudioLevels(input_peak, output_peak);
+  float additional_input_peak = 0.0F;
+  float external_output_peak = 0.0F;
+  controller->GetAudioLevels(input_peak, output_peak, additional_input_peak,
+                             external_output_peak);
+  SetAudioLevels(input_peak, output_peak, external_output_peak);
+  SetRecordingApplicationInputLevel(additional_input_peak);
+  float input_file_position = 0.0F;
+  float input_file_length = 0.0F;
+  float additional_file_position = 0.0F;
+  float additional_file_length = 0.0F;
+  controller->GetAudioFilePositions(input_file_position, input_file_length,
+                                    additional_file_position,
+                                    additional_file_length);
+  vst_input_file_position_ = input_file_position;
+  vst_additional_file_position_ = additional_file_position;
+  const auto format_time = [](const double seconds) {
+    const auto total = std::max(0, static_cast<int>(std::round(seconds)));
+    const auto minutes = total / 60;
+    const auto secs = total % 60;
+    return std::to_string(minutes) + ":" + (secs < 10 ? "0" : "") +
+           std::to_string(secs);
+  };
+  if (vst_input_file_time_label_) {
+    vst_input_file_time_label_->setText(
+        (format_time(input_file_position * input_file_length) + " / " +
+         format_time(input_file_length))
+            .c_str());
+    vst_input_file_time_label_->setDirty();
+  }
+  if (vst_additional_file_time_label_) {
+    vst_additional_file_time_label_->setText(
+        (format_time(additional_file_position * additional_file_length) +
+         " / " + format_time(additional_file_length))
+            .c_str());
+    vst_additional_file_time_label_->setDirty();
+  }
+  if (vst_input_file_progress_) vst_input_file_progress_->invalid();
+  if (vst_additional_file_progress_) vst_additional_file_progress_->invalid();
 }
 
 void Editor::PollVstRecordingStatus() {
@@ -1790,6 +2319,138 @@ void Editor::PollVstRecordingStatus() {
     return;
   }
   UpdateVstRecordingControls();
+}
+
+void Editor::OpenVstAudioFile(const bool additional) {
+  // Audio Files was removed from the VST UI. Keep this legacy entry point so
+  // old serialized/editor code remains source-compatible without shipping a
+  // decoder or silently starting a hidden player.
+  static_cast<void>(additional);
+}
+
+void Editor::SetVstFilePlaying(const bool additional, const bool playing) {
+  if (additional) vst_additional_file_playing_ = playing;
+  else vst_input_file_playing_ = playing;
+  SendVstFileConfig(additional);
+  UpdateVstFileControls(additional);
+}
+
+void Editor::StopVstFilePlayback(const bool additional) {
+  if (additional) vst_additional_file_playing_ = false;
+  else vst_input_file_playing_ = false;
+  SendVstFileConfig(additional);
+  UpdateVstFileControls(additional);
+}
+
+void Editor::SeekVstFile(const bool additional, const double position) {
+  // Seeking is applied by the decoder thread. Re-send the current transport
+  // state so the processor can apply the seek without touching the realtime
+  // callback.
+  if (additional) vst_additional_file_position_ = std::clamp(position, 0.0, 1.0);
+  else vst_input_file_position_ = std::clamp(position, 0.0, 1.0);
+  SendVstFileConfig(additional);
+}
+
+void Editor::ToggleVstFileLoop(const bool additional) {
+  if (additional) vst_additional_file_loop_ = !vst_additional_file_loop_;
+  else vst_input_file_loop_ = !vst_input_file_loop_;
+  SendVstFileConfig(additional);
+  UpdateVstFileControls(additional);
+}
+
+void Editor::SetVstFileVolume(const bool additional, const double volume) {
+  if (additional) vst_additional_file_volume_ = std::clamp(volume, 0.0, 1.0);
+  else vst_input_file_volume_ = std::clamp(volume, 0.0, 1.0);
+  // Volume changes are realtime-only.  Do not resend the transport position:
+  // doing so would make every mouse move flush and re-seek the decoder ring.
+  SendVstFileConfig(additional, false);
+  UpdateVstFileControls(additional);
+}
+
+void Editor::UpdateVstFileControls(const bool additional) {
+  auto* const container = additional ? vst_additional_file_controls_
+                                     : vst_input_file_controls_;
+  if (container == nullptr) return;
+  // Audio Files is a legacy source kept only for state compatibility.  The
+  // player is no longer exposed by either host.
+  const auto visible = false;
+  container->setVisible(visible);
+  container->setMouseEnabled(visible);
+  const auto file_path = additional ? vst_additional_file_path_
+                                    : vst_input_file_path_;
+  const auto name = file_path.empty()
+                        ? std::string("No audio file selected")
+                        : std::string(reinterpret_cast<const char*>(
+                              file_path.filename().u8string().c_str()));
+  auto* const label = additional ? vst_additional_file_name_label_
+                                 : vst_input_file_name_label_;
+  if (label) label->setText(name.c_str());
+  auto* const volume = additional ? vst_additional_file_volume_view_
+                                  : vst_input_file_volume_view_;
+  if (volume) volume->SetEnabled(visible && !file_path.empty());
+  auto* const progress = additional ? vst_additional_file_progress_
+                                    : vst_input_file_progress_;
+  if (progress) progress->SetEnabled(visible && !file_path.empty());
+  auto* const volume_label = additional ? vst_additional_file_volume_label_
+                                        : vst_input_file_volume_label_;
+  if (volume_label) {
+    const auto percent = static_cast<int>(std::lround(
+        (additional ? vst_additional_file_volume_ : vst_input_file_volume_) *
+        100.0));
+    volume_label->setText((std::to_string(percent) + "%").c_str());
+  }
+  auto* const loop = additional ? vst_additional_file_loop_button_
+                                : vst_input_file_loop_button_;
+  if (loop) loop->SetActive(additional ? vst_additional_file_loop_
+                                       : vst_input_file_loop_);
+  container->setDirty();
+}
+
+void Editor::SendVstFileConfig(const bool additional, const bool send_seek) {
+  auto* const controller = static_cast<Controller*>(getController());
+  if (controller == nullptr) return;
+  const auto source = additional ? vst_additional_input_source_
+                                 : vst_input_source_;
+  const auto& path = additional ? vst_additional_file_path_
+                                 : vst_input_file_path_;
+  const auto playing = additional ? vst_additional_file_playing_
+                                  : vst_input_file_playing_;
+  const auto loop = additional ? vst_additional_file_loop_ : vst_input_file_loop_;
+  const auto volume = additional ? vst_additional_file_volume_
+                                 : vst_input_file_volume_;
+  const auto position = additional ? vst_additional_file_position_
+                                   : vst_input_file_position_;
+  if (additional) {
+    controller->SetAdditionalInputFileState(playing, loop, volume);
+  } else {
+    controller->SetInputFileState(playing, loop, volume);
+  }
+  controller->setDirty(true);
+  if (const auto message = Steinberg::owned(controller->allocateMessage())) {
+    message->setMessageID(
+        send_seek ? (additional ? "additional_input_source_config"
+                                 : "input_source_config")
+                  : (additional ? "additional_file_volume"
+                                 : "input_file_volume"));
+    auto* const attributes = message->getAttributes();
+    if (attributes == nullptr) return;
+    if (!send_seek) {
+      attributes->setFloat("volume", static_cast<float>(volume));
+      controller->sendMessage(message);
+      return;
+    }
+    const auto utf8 = path.u8string();
+    attributes->setInt("source", static_cast<Steinberg::int64>(source));
+    attributes->setBinary("path", utf8.data(),
+                          static_cast<Steinberg::uint32>(utf8.size()));
+    attributes->setInt("playing", playing ? 1 : 0);
+    attributes->setInt("loop", loop ? 1 : 0);
+    attributes->setFloat("volume", static_cast<float>(volume));
+    if (send_seek) {
+      attributes->setFloat("seek", static_cast<float>(position));
+    }
+    controller->sendMessage(message);
+  }
 }
 
 void Editor::ChooseVstRecordingPath() {
@@ -1823,6 +2484,9 @@ void Editor::ChooseVstRecordingPath() {
           controller != nullptr) {
         controller->SetRecordingSelection(vst_recording_mode_,
                                           vst_recording_path_);
+        controller->SetRecordingAdditionalInputGain(
+            vst_recording_application_input_gain_db_);
+        controller->SetRecordingVoiceDelay(vst_voice_delay_ms_);
         SendVstRecordingSelection();
       }
       UpdateVstRecordingControls();
@@ -1832,9 +2496,8 @@ void Editor::ChooseVstRecordingPath() {
 }
 
 void Editor::StartVstRecording() {
-  if (vst_recording_mode_ == common::RecordingMode::kOff) {
-    return;
-  }
+  vst_recording_mode_ =
+      common::NormalizeRecordingMode(vst_recording_mode_);
   auto* const controller = static_cast<Controller*>(getController());
   if (controller == nullptr) {
     return;
@@ -1844,6 +2507,9 @@ void Editor::StartVstRecording() {
                           std::string(common::kDefaultRecordingBaseName);
   }
   controller->SetRecordingSelection(vst_recording_mode_, vst_recording_path_);
+  controller->SetRecordingAdditionalInputGain(
+      vst_recording_application_input_gain_db_);
+  controller->SetRecordingVoiceDelay(vst_voice_delay_ms_);
   SendVstRecordingSelection();
   SendVstRecordingStart();
   UpdateVstRecordingControls();
@@ -1882,13 +2548,13 @@ void Editor::UpdateVstRecordingControls() {
   vst_record_button_->setText(status.recording ? "STOP" : "Rec");
   vst_record_button_->SetIcon(status.recording ? ActionIcon::kStop
                                                : ActionIcon::kRecord);
-  vst_record_button_->setMouseEnabled(
-      status.recording || vst_recording_mode_ != common::RecordingMode::kOff);
+  vst_record_button_->setMouseEnabled(true);
   vst_record_button_->setDirty();
   vst_recording_mode_menu_->setMouseEnabled(!status.recording);
   vst_recording_mode_menu_->setWantsFocus(!status.recording);
   vst_recording_mode_menu_->setAlphaValue(status.recording ? 0.35 : 1.0);
   vst_recording_mode_menu_->setDirty();
+  UpdateVstAdditionalInputControls();
   if (vst_recording_status_label_ != nullptr) {
     auto text = std::string{};
     if (status.recording) {
@@ -1907,9 +2573,11 @@ void Editor::UpdateVstRecordingControls() {
 
 void Editor::SendVstRecordingStart() {
   auto* const controller = static_cast<Controller*>(getController());
-  if (controller == nullptr || vst_recording_mode_ == common::RecordingMode::kOff) {
+  if (controller == nullptr) {
     return;
   }
+  vst_recording_mode_ =
+      common::NormalizeRecordingMode(vst_recording_mode_);
   const auto path = vst_recording_path_.u8string();
   if (path.empty()) {
     return;
@@ -1922,6 +2590,11 @@ void Editor::SendVstRecordingStart() {
     attributes->setBinary(
         "base_path", reinterpret_cast<const char*>(path.data()),
         static_cast<Steinberg::uint32>(path.size()));
+    attributes->setInt("voice_delay_ms",
+                       static_cast<Steinberg::int64>(vst_voice_delay_ms_));
+    attributes->setFloat(
+        "additional_input_gain_db",
+        static_cast<float>(vst_recording_application_input_gain_db_));
     controller->sendMessage(message);
   }
 }
@@ -1941,6 +2614,12 @@ void Editor::SendVstRecordingSelection() {
     }
     static_cast<void>(attributes->setInt(
         "mode", static_cast<Steinberg::int64>(vst_recording_mode_)));
+    static_cast<void>(attributes->setInt(
+        "voice_delay_ms",
+        static_cast<Steinberg::int64>(vst_voice_delay_ms_)));
+    static_cast<void>(attributes->setFloat(
+        "additional_input_gain_db",
+        static_cast<float>(vst_recording_application_input_gain_db_)));
     static_cast<void>(attributes->setBinary(
         "base_path", reinterpret_cast<const char*>(path.data()),
         static_cast<Steinberg::uint32>(path.size())));
@@ -1964,7 +2643,7 @@ void Editor::RefreshVstWasapiDevices() {
     return;
   }
   vst_output_device_menu_->removeAllEntry();
-  vst_output_device_menu_->addEntry("OFF");
+  vst_output_device_menu_->addEntry("Off");
   vst_output_device_ids_.clear();
 
   const auto snapshot = common::EnumerateWasapiDevices();
@@ -1983,6 +2662,7 @@ void Editor::RefreshVstWasapiDevices() {
   if (controller != nullptr) {
     controller->GetDirectWasapiSelection(selected_id, exclusive);
   }
+  static_cast<void>(exclusive);
   auto selected_index = 0;
   for (auto index = std::size_t{0}; index < vst_output_device_ids_.size();
        ++index) {
@@ -1992,26 +2672,378 @@ void Editor::RefreshVstWasapiDevices() {
     }
   }
   static_cast<void>(vst_output_device_menu_->setCurrent(selected_index));
-  vst_exclusive_checkbox_->setValue(
-      selected_index > 0 && exclusive ? 1.0F : 0.0F);
   UpdateVstDirectWasapiControls();
 }
 
+void Editor::RefreshVstApplicationInputs() {
+  if (standalone_frame_ || vst_application_input_menu_ == nullptr ||
+      vst_additional_input_source_menu_ == nullptr) {
+    return;
+  }
+  const auto previous_main_process_id = vst_application_input_process_id_;
+  const auto previous_additional_process_id =
+      vst_additional_input_process_id_;
+  vst_application_input_menu_->removeAllEntry();
+  vst_application_input_menu_->addEntry("Off");
+  vst_additional_input_source_menu_->removeAllEntry();
+  vst_additional_input_source_menu_->addEntry("Off");
+  vst_application_inputs_.clear();
+  auto main_identity = std::string{};
+  auto additional_identity = vst_additional_input_identity_;
+  if (auto* const controller = static_cast<Controller*>(getController());
+      controller != nullptr) {
+    controller->GetApplicationInputIdentity(main_identity);
+    controller->GetAdditionalApplicationInputIdentity(additional_identity);
+  }
+  const auto exclusions = common::CurrentApplicationInputExclusions();
+  auto snapshot = common::MergeRememberedApplicationInput(
+      common::EnumerateApplicationInputs(exclusions), main_identity, exclusions);
+  snapshot = common::MergeRememberedApplicationInput(
+      std::move(snapshot), additional_identity, exclusions);
+  vst_application_inputs_ = snapshot.applications;
+  for (const auto& application : vst_application_inputs_) {
+    auto label = application.display_name;
+    if (application.process_id != 0) {
+      label += " (" + std::to_string(application.process_id) + ")";
+      if (!application.active) {
+        label += " [inactive]";
+      }
+    } else {
+      label += " [waiting]";
+    }
+    vst_application_input_menu_->addEntry(label.c_str());
+    vst_additional_input_source_menu_->addEntry(label.c_str());
+  }
+  auto main_selected = 0;
+  auto additional_selected = -1;
+  auto selected_process_id = std::uint32_t{0};
+  auto additional_selected_process_id = std::uint32_t{0};
+  for (auto index = std::size_t{0}; index < vst_application_inputs_.size();
+       ++index) {
+    if (vst_application_inputs_[index].identity == main_identity) {
+      main_selected = static_cast<int>(index + 1);
+      selected_process_id = vst_application_inputs_[index].process_id;
+    }
+    if (vst_additional_input_source_ ==
+            common::InputSource::kApplicationInput &&
+        vst_application_inputs_[index].identity == additional_identity) {
+      additional_selected = static_cast<int>(index);
+      additional_selected_process_id = vst_application_inputs_[index].process_id;
+    }
+  }
+  if (additional_selected < 0 &&
+      vst_additional_input_source_ ==
+          common::InputSource::kApplicationInput) {
+    // ADD BGM is enabled by selecting an application directly in its menu.
+    // When no application was saved yet, start with the first active candidate
+    // so the user can use the feature without an extra selection step.
+    for (auto index = std::size_t{0}; index < vst_application_inputs_.size();
+         ++index) {
+      if (vst_application_inputs_[index].active &&
+          vst_application_inputs_[index].process_id != 0) {
+        additional_selected = static_cast<int>(index);
+        additional_selected_process_id =
+            vst_application_inputs_[index].process_id;
+        additional_identity = vst_application_inputs_[index].identity;
+        break;
+      }
+    }
+    if (additional_selected < 0 && !vst_application_inputs_.empty()) {
+      additional_selected = 0;
+      additional_selected_process_id = vst_application_inputs_[0].process_id;
+      additional_identity = vst_application_inputs_[0].identity;
+    }
+  }
+  vst_application_input_process_id_ = selected_process_id;
+  vst_additional_input_process_id_ = additional_selected_process_id;
+  vst_additional_input_identity_ = additional_identity;
+  const auto main_process_changed =
+      previous_main_process_id != selected_process_id;
+  const auto additional_process_changed =
+      previous_additional_process_id != additional_selected_process_id;
+  static_cast<void>(vst_application_input_menu_->setCurrent(main_selected));
+  vst_application_input_menu_->setDirty();
+  const auto additional_menu_index =
+      additional_selected >= 0 ? additional_selected + 1 : 0;
+  static_cast<void>(vst_additional_input_source_menu_->setCurrent(
+      additional_menu_index));
+  vst_additional_input_source_menu_->setDirty();
+  UpdateVstApplicationInputControls();
+  UpdateVstAdditionalInputControls();
+  if (main_selected > 0 && vst_input_source_menu_ != nullptr &&
+      vst_input_source_menu_->getCurrentIndex() == 1) {
+    auto status = common::ApplicationInputStatus::kOff;
+    [[maybe_unused]] auto error = std::string{};
+    if (auto* const controller = static_cast<Controller*>(getController());
+        controller != nullptr) {
+      controller->GetApplicationInputStatus(status, error);
+    }
+    if (main_process_changed || status == common::ApplicationInputStatus::kOff ||
+        status == common::ApplicationInputStatus::kUnavailable) {
+      SendVstApplicationInputSelection();
+    }
+  }
+  if (additional_selected >= 0 &&
+      vst_additional_input_source_menu_->getCurrentIndex() > 0) {
+    auto status = common::ApplicationInputStatus::kOff;
+    [[maybe_unused]] auto error = std::string{};
+    if (auto* const controller = static_cast<Controller*>(getController());
+        controller != nullptr) {
+      controller->GetApplicationInputStatus(status, error);
+    }
+    if (additional_process_changed ||
+        status == common::ApplicationInputStatus::kOff ||
+        status == common::ApplicationInputStatus::kUnavailable) {
+      SendVstAdditionalInputSelection();
+    }
+  }
+}
+
+void Editor::UpdateVstApplicationInputControls() {
+  if (vst_input_source_menu_ == nullptr ||
+      vst_application_input_menu_ == nullptr) {
+    return;
+  }
+  const auto application_mode = vst_input_source_menu_->getCurrentIndex() == 1;
+  constexpr auto file_mode = false;
+  if (vst_application_input_label_ != nullptr) {
+    vst_application_input_label_->setVisible(!file_mode);
+    vst_application_input_label_->setDirty();
+  }
+  vst_application_input_menu_->setMouseEnabled(application_mode);
+  vst_application_input_menu_->setWantsFocus(application_mode);
+  vst_application_input_menu_->setAlphaValue(application_mode ? 1.0 : 0.35);
+  vst_application_input_menu_->setVisible(!file_mode);
+  vst_application_input_menu_->setDirty();
+  if (vst_application_input_chevron_ != nullptr) {
+    vst_application_input_chevron_->setVisible(!file_mode);
+    vst_application_input_chevron_->setAlphaValue(application_mode ? 1.0
+                                                                    : 0.35);
+    vst_application_input_chevron_->setDirty();
+  }
+  if (vst_application_input_level_ != nullptr) {
+    vst_application_input_level_->SetEnabled(application_mode);
+    vst_application_input_level_->setVisible(!file_mode);
+    vst_application_input_level_->setDirty();
+  }
+  if (vst_application_input_refresh_button_ != nullptr) {
+    vst_application_input_refresh_button_->setMouseEnabled(application_mode);
+    vst_application_input_refresh_button_->setVisible(!file_mode);
+    vst_application_input_refresh_button_->setAlphaValue(application_mode
+                                                              ? 1.0
+                                                              : 0.35);
+    vst_application_input_refresh_button_->invalid();
+  }
+  if (vst_input_file_controls_ != nullptr) {
+    const auto visible = vst_input_source_menu_->getCurrentIndex() == 2;
+    vst_input_file_controls_->setVisible(visible);
+    vst_input_file_controls_->setMouseEnabled(visible);
+    vst_input_file_controls_->setDirty();
+  }
+}
+
+void Editor::UpdateVstAdditionalInputControls() {
+  if (vst_additional_input_source_menu_ == nullptr) {
+    return;
+  }
+  auto* const controller = static_cast<Controller*>(getController());
+  if (controller == nullptr) {
+    return;
+  }
+  common::RecordingStatus status;
+  controller->GetRecordingStatus(status);
+  const auto source_index = vst_additional_input_source_menu_->getCurrentIndex();
+  const auto source_enabled = source_index > 0;
+  const auto application_selected =
+      source_enabled && !vst_additional_input_identity_.empty();
+  const auto editable = !status.recording;
+  const auto source_interactive = editable;
+
+  vst_additional_input_source_menu_->setMouseEnabled(source_interactive);
+  vst_additional_input_source_menu_->setWantsFocus(source_interactive);
+  vst_additional_input_source_menu_->setAlphaValue(source_interactive ? 1.0
+                                                                        : 0.35);
+  vst_additional_input_source_menu_->setDirty();
+  if (vst_additional_input_source_chevron_ != nullptr) {
+    vst_additional_input_source_chevron_->setAlphaValue(
+        source_interactive ? 1.0 : 0.35);
+    vst_additional_input_source_chevron_->setDirty();
+  }
+
+  if (vst_additional_input_refresh_button_ != nullptr) {
+    vst_additional_input_refresh_button_->setMouseEnabled(editable);
+    vst_additional_input_refresh_button_->setAlphaValue(
+        editable ? 1.0 : 0.35);
+    vst_additional_input_refresh_button_->setVisible(true);
+    vst_additional_input_refresh_button_->invalid();
+  }
+  if (vst_recording_application_input_level_ != nullptr) {
+    vst_recording_application_input_level_->SetEnabled(application_selected);
+    vst_recording_application_input_level_->setVisible(source_enabled);
+    vst_recording_application_input_level_->setDirty();
+  }
+  if (vst_additional_file_controls_ != nullptr) {
+    vst_additional_file_controls_->setVisible(false);
+    vst_additional_file_controls_->setMouseEnabled(false);
+    vst_additional_file_controls_->setDirty();
+  }
+  if (vst_recording_application_input_gain_slider_ != nullptr) {
+    vst_recording_application_input_gain_slider_->SetEnabled(
+        editable && application_selected);
+  }
+  if (vst_voice_delay_slider_ != nullptr) {
+    // BGM Delay is relevant only while ADD BGM has an application selected,
+    // matching the BGM Gain control directly above it.
+    vst_voice_delay_slider_->SetEnabled(editable && application_selected);
+  }
+}
+
+void Editor::SendVstApplicationInputOff() {
+  auto* const controller = static_cast<Controller*>(getController());
+  if (controller == nullptr) {
+    return;
+  }
+  controller->ClearApplicationInputSelection();
+  controller->SetInputSource(common::InputSource::kDawInput,
+                             vst_input_file_path_);
+  controller->setDirty(true);
+  if (const auto message = Steinberg::owned(controller->allocateMessage())) {
+    message->setMessageID("application_input_clear");
+    controller->sendMessage(message);
+  }
+}
+
+void Editor::SendVstApplicationInputMainOff() {
+  auto* const controller = static_cast<Controller*>(getController());
+  if (controller == nullptr) {
+    return;
+  }
+  controller->DisableApplicationInputMain();
+  controller->SetInputSource(common::InputSource::kDawInput,
+                             vst_input_file_path_);
+  controller->setDirty(true);
+  if (const auto message = Steinberg::owned(controller->allocateMessage())) {
+    message->setMessageID("application_input_main_off");
+    controller->sendMessage(message);
+  }
+}
+
+void Editor::SendVstAdditionalInputOff() {
+  auto* const controller = static_cast<Controller*>(getController());
+  if (controller == nullptr) {
+    return;
+  }
+  controller->SetAdditionalApplicationInputIdentity({});
+  controller->SetAdditionalInputEnabled(false);
+  controller->SetAdditionalInputSource(common::InputSource::kOff,
+                                       vst_additional_file_path_);
+  vst_additional_input_source_ = common::InputSource::kOff;
+  vst_additional_input_identity_.clear();
+  if (vst_additional_input_source_menu_ != nullptr) {
+    static_cast<void>(vst_additional_input_source_menu_->setCurrent(0));
+    vst_additional_input_source_menu_->setDirty();
+  }
+  controller->setDirty(true);
+  if (const auto message = Steinberg::owned(controller->allocateMessage())) {
+    message->setMessageID("additional_input_off");
+    controller->sendMessage(message);
+  }
+  UpdateVstAdditionalInputControls();
+}
+
+void Editor::SendVstApplicationInputSelection() {
+  if (vst_input_source_menu_ == nullptr ||
+      vst_application_input_menu_ == nullptr) {
+    UpdateVstApplicationInputControls();
+    return;
+  }
+  const auto selected = vst_application_input_menu_->getCurrentIndex() - 1;
+  if (selected < 0 ||
+      selected >= static_cast<int>(vst_application_inputs_.size())) {
+    SendVstApplicationInputClear();
+    UpdateVstApplicationInputControls();
+    return;
+  }
+  auto* const controller = static_cast<Controller*>(getController());
+  if (controller == nullptr) {
+    return;
+  }
+  const auto& application =
+      vst_application_inputs_[static_cast<std::size_t>(selected)];
+  vst_application_input_identity_ = application.identity;
+  controller->SetApplicationInputIdentity(application.identity);
+  controller->setDirty(true);
+  if (vst_input_source_menu_->getCurrentIndex() != 1) {
+    UpdateVstApplicationInputControls();
+    return;
+  }
+  controller->SetApplicationInputSelection(application.identity);
+  controller->SetInputSource(common::InputSource::kApplicationInput,
+                             vst_input_file_path_);
+  controller->setDirty(true);
+  if (const auto message = Steinberg::owned(controller->allocateMessage())) {
+    message->setMessageID("application_input_config");
+    auto* const attributes = message->getAttributes();
+    attributes->setBinary("identity", application.identity.data(),
+                          static_cast<Steinberg::uint32>(
+                              application.identity.size()));
+    attributes->setInt("process_id",
+                       static_cast<Steinberg::int64>(application.process_id));
+    controller->sendMessage(message);
+  }
+  UpdateVstApplicationInputControls();
+}
+
+void Editor::SendVstApplicationInputClear() {
+  SendVstApplicationInputOff();
+}
+
+void Editor::SendVstAdditionalInputSelection() {
+  if (vst_additional_input_source_menu_ == nullptr) {
+    return;
+  }
+  const auto selected = vst_additional_input_source_menu_->getCurrentIndex() - 1;
+  if (selected < 0 ||
+      selected >= static_cast<int>(vst_application_inputs_.size())) {
+    SendVstAdditionalInputOff();
+    UpdateVstAdditionalInputControls();
+    return;
+  }
+  auto* const controller = static_cast<Controller*>(getController());
+  if (controller == nullptr) {
+    return;
+  }
+  const auto& application =
+      vst_application_inputs_[static_cast<std::size_t>(selected)];
+  vst_additional_input_identity_ = application.identity;
+  static_cast<void>(vst_additional_input_source_menu_->setCurrent(selected + 1));
+  vst_additional_input_source_menu_->setDirty();
+  controller->SetAdditionalApplicationInputIdentity(application.identity);
+  controller->SetAdditionalInputEnabled(true);
+  controller->SetAdditionalInputSource(common::InputSource::kApplicationInput,
+                                       vst_additional_file_path_);
+  vst_additional_input_source_ = common::InputSource::kApplicationInput;
+  controller->setDirty(true);
+  if (const auto message = Steinberg::owned(controller->allocateMessage())) {
+    message->setMessageID("additional_input_config");
+    auto* const attributes = message->getAttributes();
+    attributes->setBinary("identity", application.identity.data(),
+                          static_cast<Steinberg::uint32>(
+                              application.identity.size()));
+    attributes->setInt("enabled", 1);
+    controller->sendMessage(message);
+  }
+  UpdateVstAdditionalInputControls();
+}
+
 void Editor::UpdateVstDirectWasapiControls() {
-  if (vst_output_device_menu_ == nullptr || vst_exclusive_checkbox_ == nullptr) {
+  if (vst_output_device_menu_ == nullptr) {
     return;
   }
   const auto enabled = vst_output_device_menu_->getCurrentIndex() > 0;
   if (vst_output_level_ != nullptr) {
     vst_output_level_->SetEnabled(enabled);
   }
-  vst_exclusive_checkbox_->setMouseEnabled(enabled);
-  vst_exclusive_checkbox_->setWantsFocus(enabled);
-  vst_exclusive_checkbox_->setAlphaValue(enabled ? 1.0 : 0.35);
-  if (!enabled) {
-    vst_exclusive_checkbox_->setValue(0.0F);
-  }
-  vst_exclusive_checkbox_->setDirty();
 }
 
 void Editor::SendVstDirectWasapiOff() {
@@ -2043,15 +3075,14 @@ void Editor::SendVstDirectWasapiSelection() {
     return;
   }
   const auto& device_id = vst_output_device_ids_[selected_index - 1];
-  const auto exclusive = vst_exclusive_checkbox_->getValue() > 0.5F;
-  controller->SetDirectWasapiSelection(device_id, exclusive);
+  controller->SetDirectWasapiSelection(device_id, false);
   controller->setDirty(true);
   if (const auto message = Steinberg::owned(controller->allocateMessage())) {
     message->setMessageID("direct_wasapi_config");
     auto* const attributes = message->getAttributes();
     attributes->setBinary("device_id", device_id.data(),
                           static_cast<Steinberg::uint32>(device_id.size()));
-    attributes->setInt("exclusive", exclusive ? 1 : 0);
+    attributes->setInt("exclusive", 0);
     controller->sendMessage(message);
   }
   UpdateVstDirectWasapiControls();
@@ -2552,6 +3583,9 @@ void Editor::AddCurrentPreset() {
        .input_gain = get_double(ParameterID::kInputGain),
        .output_gain = get_double(ParameterID::kOutputGain),
        .compensated_drive = get_double(ParameterID::kCompensatedDrive),
+       .denoise_threshold = get_double(ParameterID::kDenoiseThreshold),
+       .denoise_reduction = get_double(ParameterID::kDenoiseReduction),
+       .denoise_hf_cut = get_double(ParameterID::kDenoiseHfCut),
        .de_mud = get_double(ParameterID::kDeMud),
        .presence = get_double(ParameterID::kPresence),
        .reverb_mix = get_double(ParameterID::kReverbMix),
@@ -2604,6 +3638,9 @@ void Editor::CreateNewPreset(const bool reset_state) {
        .input_gain = number_default(ParameterID::kInputGain),
        .output_gain = number_default(ParameterID::kOutputGain),
        .compensated_drive = number_default(ParameterID::kCompensatedDrive),
+       .denoise_threshold = number_default(ParameterID::kDenoiseThreshold),
+       .denoise_reduction = number_default(ParameterID::kDenoiseReduction),
+       .denoise_hf_cut = number_default(ParameterID::kDenoiseHfCut),
        .de_mud = number_default(ParameterID::kDeMud),
        .presence = number_default(ParameterID::kPresence),
        .reverb_mix = number_default(ParameterID::kReverbMix),
@@ -2667,6 +3704,9 @@ void Editor::CreateNewPreset(const bool reset_state) {
             ParameterID::kInputGain,
             ParameterID::kOutputGain,
             ParameterID::kCompensatedDrive,
+            ParameterID::kDenoiseThreshold,
+            ParameterID::kDenoiseReduction,
+            ParameterID::kDenoiseHfCut,
             ParameterID::kDeMud,
             ParameterID::kPresence,
             ParameterID::kReverbMix,
@@ -2717,6 +3757,19 @@ auto Editor::CurrentModelVoicePresetName() -> std::string {
     name += "Morph";
   }
   return name == " / " ? std::string{} : name;
+}
+
+auto Editor::ModelDialogInitialDirectory() const
+    -> std::filesystem::path {
+  if (selected_preset_ < 0 ||
+      selected_preset_ >= static_cast<int>(presets_.size())) {
+    return {};
+  }
+  const auto& model_path = presets_[selected_preset_].model_path;
+  if (model_path.empty()) {
+    return {};
+  }
+  return std::filesystem::path(model_path).parent_path();
 }
 
 auto Editor::RenameSelectedPresetFromCurrentModelVoice() -> bool {
@@ -2775,6 +3828,12 @@ void Editor::ApplyPreset(const int index) {
               static_cast<float>(preset.output_gain));
   set_control(ParameterID::kCompensatedDrive,
               static_cast<float>(preset.compensated_drive));
+  set_control(ParameterID::kDenoiseThreshold,
+              static_cast<float>(preset.denoise_threshold));
+  set_control(ParameterID::kDenoiseReduction,
+              static_cast<float>(preset.denoise_reduction));
+  set_control(ParameterID::kDenoiseHfCut,
+              static_cast<float>(preset.denoise_hf_cut));
   set_control(ParameterID::kDeMud, static_cast<float>(preset.de_mud));
   set_control(ParameterID::kPresence, static_cast<float>(preset.presence));
   set_control(ParameterID::kReverbMix,
@@ -3206,6 +4265,9 @@ void Editor::UpdateSelectedPresetFromCurrentState(
     case ParameterID::kInputGain:
     case ParameterID::kOutputGain:
     case ParameterID::kCompensatedDrive:
+    case ParameterID::kDenoiseThreshold:
+    case ParameterID::kDenoiseReduction:
+    case ParameterID::kDenoiseHfCut:
     case ParameterID::kDeMud:
     case ParameterID::kPresence:
     case ParameterID::kReverbMix:
@@ -3235,6 +4297,9 @@ void Editor::UpdateSelectedPresetFromCurrentState(
   preset.input_gain = value(ParameterID::kInputGain);
   preset.output_gain = value(ParameterID::kOutputGain);
   preset.compensated_drive = value(ParameterID::kCompensatedDrive);
+  preset.denoise_threshold = value(ParameterID::kDenoiseThreshold);
+  preset.denoise_reduction = value(ParameterID::kDenoiseReduction);
+  preset.denoise_hf_cut = value(ParameterID::kDenoiseHfCut);
   preset.de_mud = value(ParameterID::kDeMud);
   preset.presence = value(ParameterID::kPresence);
   preset.reverb_mix = value(ParameterID::kReverbMix);
@@ -3726,25 +4791,99 @@ void Editor::valueChanged(CControl* const pControl) {
   if (!pControl) {
     return;
   }
+  if (pControl == vst_recording_application_input_gain_slider_) {
+    vst_recording_application_input_gain_db_ = std::clamp(
+        std::round(static_cast<double>(
+                       vst_recording_application_input_gain_slider_->getValue()) *
+                   2.0) /
+            2.0,
+        common::kMinAdditionalInputGainDb,
+        common::kMaxAdditionalInputGainDb);
+    vst_recording_application_input_gain_slider_->setValue(
+        static_cast<float>(vst_recording_application_input_gain_db_));
+    if (auto* const controller = static_cast<Controller*>(getController());
+        controller != nullptr) {
+      controller->SetRecordingAdditionalInputGain(
+          vst_recording_application_input_gain_db_);
+      SendVstRecordingSelection();
+    }
+    vst_recording_application_input_gain_slider_->invalid();
+    return;
+  }
+  if (pControl == vst_voice_delay_slider_) {
+    const auto value = static_cast<std::int32_t>(std::clamp(
+        static_cast<int>(std::lround(vst_voice_delay_slider_->getValue())),
+        static_cast<int>(common::kMinBgmDelayMs),
+        static_cast<int>(common::kMaxBgmDelayMs)));
+    vst_voice_delay_ms_ = value;
+    vst_voice_delay_slider_->setValue(static_cast<float>(value));
+    if (auto* const controller = static_cast<Controller*>(getController());
+        controller != nullptr) {
+      controller->SetRecordingVoiceDelay(value);
+      SendVstRecordingSelection();
+    }
+    vst_voice_delay_slider_->invalid();
+    return;
+  }
   if (const auto column = ColumnForView(pControl);
       column != FocusColumn::kNone) {
     SetFocusedColumn(column);
+  }
+  if (pControl == vst_input_source_menu_) {
+    const auto index = vst_input_source_menu_->getCurrentIndex();
+    vst_input_source_ = index == 1 ? common::InputSource::kApplicationInput
+                                   : common::InputSource::kDawInput;
+    if (index == 1) {
+      RefreshVstApplicationInputs();
+      SendVstApplicationInputSelection();
+    } else if (index == 0) {
+      SendVstApplicationInputMainOff();
+    } else {
+      SendVstApplicationInputMainOff();
+    }
+    if (auto* const controller = static_cast<Controller*>(getController());
+        controller != nullptr) {
+      controller->SetInputSource(vst_input_source_, vst_input_file_path_);
+    }
+    UpdateVstApplicationInputControls();
+    UpdateVstFileControls(false);
+    UpdateVstRecordingControls();
+    return;
+  }
+  if (pControl == vst_application_input_menu_) {
+    vst_input_source_ = common::InputSource::kApplicationInput;
+    if (auto* const controller = static_cast<Controller*>(getController());
+        controller != nullptr) {
+      controller->SetInputSource(vst_input_source_, vst_input_file_path_);
+    }
+    SendVstApplicationInputSelection();
+    return;
+  }
+  if (pControl == vst_additional_input_source_menu_) {
+    const auto index = vst_additional_input_source_menu_->getCurrentIndex();
+    if (index <= 0) {
+      SendVstAdditionalInputOff();
+    } else {
+      vst_additional_input_source_ = common::InputSource::kApplicationInput;
+      SendVstAdditionalInputSelection();
+    }
+    if (auto* const controller = static_cast<Controller*>(getController());
+        controller != nullptr) {
+      controller->SetAdditionalInputSource(vst_additional_input_source_,
+                                            vst_additional_file_path_);
+    }
+    UpdateVstFileControls(true);
+    UpdateVstRecordingControls();
+    return;
   }
   if (pControl == vst_output_device_menu_) {
     SendVstDirectWasapiSelection();
     return;
   }
-  if (pControl == vst_exclusive_checkbox_) {
-    if (vst_output_device_menu_ &&
-        vst_output_device_menu_->getCurrentIndex() > 0) {
-      SendVstDirectWasapiSelection();
-    }
-    return;
-  }
   if (pControl == vst_recording_mode_menu_) {
     if (vst_recording_mode_menu_ != nullptr) {
-      vst_recording_mode_ = static_cast<common::RecordingMode>(
-          std::clamp(vst_recording_mode_menu_->getCurrentIndex(), 0, 3));
+      vst_recording_mode_ = common::RecordingModeFromMenuIndex(
+          vst_recording_mode_menu_->getCurrentIndex());
       if (auto* const controller = static_cast<Controller*>(getController());
           controller != nullptr) {
         controller->SetRecordingSelection(vst_recording_mode_,

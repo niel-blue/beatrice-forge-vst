@@ -13,7 +13,7 @@ Beatrice Forge は、Project Beatrice の音声変換 VST3 プラグインを基
 モデル本体や非公開の推論ライブラリは、このリポジトリには同梱していません。
 
 ### バージョン履歴
-- **0.9.0**：release
+- **0.9.1**：EFFECTS に変換後の音声へかける Denoise（Threshold / Reduction / HF Cut）を追加。IN/OUT に Application Input と Add BGM を追加し、外部アプリの音声を変換音声とミックスして外部出力・録音できるようにしました。BGM Delay（-100〜+100 ms）で相対的なずれを補正できます。
 
 現在のForgeは、Project Beatrice `2.0.0-rc.3` を基盤としていますが、公式版のバージョン番号とForgeの製品バージョンは別に管理します。
 
@@ -40,9 +40,13 @@ Beatrice Forge は、Project Beatrice の音声変換 VST3 プラグインを基
 
 - **Noise Reduction Boost** — 一部のモデルで発生する低いノイズを、必要に応じて抑えます。
 - **INPUT CLEANUP** — Low Cut で低域の不要な成分を抑え、Light Denoise で一定した環境ノイズを軽減します。De-click は短いクリック音やリップノイズを抑えます。
-- **EFFECTS** — De-Mud でこもりを抑え、Presence で明瞭さを加えます。Reverb では残響の量、長さ、音色を調整できます。
+- **EFFECTS** — Denoise は変換後の音声のノイズを Threshold / Reduction / HF Cut で抑えます。De-Mud でこもりを抑え、Presence で明瞭さを加えます。Reverb では残響の量、長さ、音色を調整できます。
 - **入力・変換後の音量インジケーター** — 入力音と変換後の音が入っているか、音量がどの程度かを画面上で確認できます。
 - **レガシースタイルのモーフ画面** — 従来の操作感を残したモーフ画面で、話者名とウェイト値を確認しながら調整できます。
+
+### Application Input と BGM ミックス
+
+IN/OUT の INPUT SOURCE または ADD BGM で外部アプリケーションの音声を選択できます。ADD BGM の音声は変換音声とミックスされ、VST独自の外部出力と録音に送られます。ホストのモニター出力には重ねません。BGM GAIN でBGMだけの外部出力・録音レベルを調整し、BGM Delay（-100〜+100 ms）で音声とBGMのずれを補正します。
 
 
 ### VST 独自の外部出力
@@ -54,10 +58,11 @@ IN/OUT タブの RECORDING から、次のモードを選べます。
 
 | モード | 保存内容 |
 | --- | --- |
-| OFF | 録音しない |
 | Output | 変換後の出力を保存 |
 | Input/Output Separate | 入力と出力を別ファイルに保存 |
 | Input/Output L-R | 入力を左、出力を右にまとめて保存 |
+
+初期値は Output です。録音は常に REC ボタンから開始できます。
 
 保存先の初期値は、Windows のユーザー Music フォルダです。BROWSE で保存先・ベースファイル名を変更できます。実際に保存されるファイル名は、モードに応じて次の形式になります。
 

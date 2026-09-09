@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstring>
 #include <ios>
 #include <memory>
@@ -147,12 +148,31 @@ auto PLUGIN_API Controller::setComponentState(IBStream* const state)
   }
   if (ui_state.direct_wasapi_enabled &&
       !ui_state.direct_wasapi_device_id.empty()) {
-    SetDirectWasapiSelection(ui_state.direct_wasapi_device_id,
-                             ui_state.direct_wasapi_exclusive);
+    SetDirectWasapiSelection(ui_state.direct_wasapi_device_id, false);
   } else {
     ClearDirectWasapiSelection();
   }
+  SetApplicationInputIdentity(ui_state.application_input_identity);
+  if (ui_state.application_input_enabled &&
+      !ui_state.application_input_identity.empty()) {
+    SetApplicationInputSelection(ui_state.application_input_identity);
+  } else {
+    DisableApplicationInputMain();
+  }
+  SetAdditionalApplicationInputIdentity(
+      ui_state.additional_application_input_identity);
+  SetAdditionalInputEnabled(ui_state.additional_input_enabled);
+  SetInputSource(ui_state.input_source, ui_state.input_file_path);
+  SetInputFileState(ui_state.input_file_playing, ui_state.input_file_loop,
+                    ui_state.input_file_volume);
+  SetAdditionalInputSource(ui_state.additional_input_source,
+                           ui_state.additional_input_file_path);
+  SetAdditionalInputFileState(ui_state.additional_file_playing,
+                              ui_state.additional_file_loop,
+                              ui_state.additional_file_volume);
   SetRecordingSelection(ui_state.recording_mode, ui_state.recording_path);
+  SetRecordingVoiceDelay(ui_state.voice_delay_ms);
+  SetRecordingAdditionalInputGain(ui_state.additional_input_gain_db);
   for (auto* const editor : editors_) {
     if (editor != nullptr) {
       editor->SyncVstExternalState();
@@ -334,6 +354,30 @@ auto PLUGIN_API Controller::notify(IMessage* const message) -> tresult {
     }
     return kResultTrue;
   }
+  if (std::strcmp(message->getMessageID(), "application_input_status") == 0) {
+    auto* const attributes = message->getAttributes();
+    Steinberg::int64 status = 0;
+    if (attributes == nullptr ||
+        attributes->getInt("status", status) != kResultTrue) {
+      return kResultFalse;
+    }
+    status = std::clamp<Steinberg::int64>(status, 0, 3);
+    auto error = std::string{};
+    Steinberg::uint32 size = 0;
+    const void* data = nullptr;
+    if (attributes->getBinary("error", data, size) == kResultTrue &&
+        data != nullptr && size != 0) {
+      error.assign(static_cast<const char*>(data), size);
+    }
+    application_input_status_.store(
+        static_cast<common::ApplicationInputStatus>(status),
+        std::memory_order_release);
+    {
+      std::lock_guard<std::mutex> lock(application_input_mutex_);
+      application_input_error_ = std::move(error);
+    }
+    return kResultTrue;
+  }
   if (std::strcmp(message->getMessageID(), "audio_levels") == 0) {
     double input_peak = 0.0;
     double output_peak = 0.0;
@@ -347,6 +391,44 @@ auto PLUGIN_API Controller::notify(IMessage* const message) -> tresult {
                       std::memory_order_relaxed);
     output_peak_.store(static_cast<float>(std::clamp(output_peak, 0.0, 2.0)),
                        std::memory_order_relaxed);
+    double external_output_peak = output_peak;
+    static_cast<void>(attributes->getFloat("external_output_peak",
+                                            external_output_peak));
+    external_output_peak_.store(
+        static_cast<float>(std::clamp(external_output_peak, 0.0, 2.0)),
+        std::memory_order_relaxed);
+    double additional_input_peak = 0.0;
+    if (attributes->getFloat("additional_input_peak",
+                             additional_input_peak) != kResultTrue) {
+      additional_input_peak = 0.0;
+    }
+    additional_input_peak_.store(
+        static_cast<float>(std::clamp(additional_input_peak, 0.0, 2.0)),
+        std::memory_order_relaxed);
+    double input_file_position = 0.0;
+    double input_file_length = 0.0;
+    double additional_file_position = 0.0;
+    double additional_file_length = 0.0;
+    static_cast<void>(attributes->getFloat("input_file_position",
+                                           input_file_position));
+    static_cast<void>(attributes->getFloat("input_file_length",
+                                           input_file_length));
+    static_cast<void>(attributes->getFloat("additional_file_position",
+                                           additional_file_position));
+    static_cast<void>(attributes->getFloat("additional_file_length",
+                                           additional_file_length));
+    input_file_position_.store(
+        static_cast<float>(std::clamp(input_file_position, 0.0, 1.0)),
+        std::memory_order_relaxed);
+    input_file_length_.store(
+        static_cast<float>(std::max(0.0, input_file_length)),
+        std::memory_order_relaxed);
+    additional_file_position_.store(
+        static_cast<float>(std::clamp(additional_file_position, 0.0, 1.0)),
+        std::memory_order_relaxed);
+    additional_file_length_.store(
+        static_cast<float>(std::max(0.0, additional_file_length)),
+        std::memory_order_relaxed);
     return kResultTrue;
   }
   if (std::strcmp(message->getMessageID(), "recording_status") == 0) {
@@ -393,10 +475,10 @@ auto PLUGIN_API Controller::notify(IMessage* const message) -> tresult {
 }
 
 void Controller::SetDirectWasapiSelection(std::string device_id,
-                                           const bool exclusive) {
+                                           const bool /*exclusive*/) {
   std::lock_guard<std::mutex> lock(direct_wasapi_mutex_);
   direct_wasapi_device_id_ = std::move(device_id);
-  direct_wasapi_exclusive_ = exclusive;
+  direct_wasapi_exclusive_ = false;
 }
 
 void Controller::ClearDirectWasapiSelection() {
@@ -419,10 +501,143 @@ void Controller::GetDirectWasapiStatus(DirectWasapiStatus& status,
   error = direct_wasapi_error_;
 }
 
+void Controller::SetApplicationInputSelection(std::string identity) {
+  std::lock_guard<std::mutex> lock(application_input_mutex_);
+  application_input_enabled_ = !identity.empty();
+  application_input_identity_ = std::move(identity);
+}
+
+void Controller::DisableApplicationInputMain() {
+  std::lock_guard<std::mutex> lock(application_input_mutex_);
+  application_input_enabled_ = false;
+}
+
+void Controller::ClearApplicationInputSelection() {
+  std::lock_guard<std::mutex> lock(application_input_mutex_);
+  application_input_enabled_ = false;
+  application_input_identity_.clear();
+}
+
+void Controller::GetApplicationInputSelection(std::string& identity) const {
+  std::lock_guard<std::mutex> lock(application_input_mutex_);
+  identity = application_input_enabled_ ? application_input_identity_
+                                        : std::string{};
+}
+
+void Controller::SetApplicationInputIdentity(std::string identity) {
+  std::lock_guard<std::mutex> lock(application_input_mutex_);
+  application_input_identity_ = std::move(identity);
+}
+
+void Controller::GetApplicationInputIdentity(std::string& identity) const {
+  std::lock_guard<std::mutex> lock(application_input_mutex_);
+  identity = application_input_identity_;
+}
+
+void Controller::SetAdditionalApplicationInputIdentity(std::string identity) {
+  std::lock_guard<std::mutex> lock(application_input_mutex_);
+  additional_application_input_identity_ = std::move(identity);
+}
+
+void Controller::GetAdditionalApplicationInputIdentity(
+    std::string& identity) const {
+  std::lock_guard<std::mutex> lock(application_input_mutex_);
+  identity = additional_application_input_identity_;
+}
+
+void Controller::SetAdditionalInputEnabled(const bool enabled) {
+  std::lock_guard<std::mutex> lock(application_input_mutex_);
+  additional_input_enabled_ = enabled;
+}
+
+auto Controller::GetAdditionalInputEnabled() const -> bool {
+  std::lock_guard<std::mutex> lock(application_input_mutex_);
+  return additional_input_enabled_;
+}
+
+void Controller::SetInputSource(const common::InputSource source,
+                                std::filesystem::path file_path) {
+  std::lock_guard<std::mutex> lock(application_input_mutex_);
+  // Audio Files is retained as a legacy serialized value, but is no longer
+  // exposed.  Normalize old projects to the ordinary DAW input on load.
+  input_source_ = source == common::InputSource::kAudioFile
+                      ? common::InputSource::kDawInput
+                      : source;
+  static_cast<void>(file_path);
+  input_file_path_.clear();
+}
+
+void Controller::GetInputSource(common::InputSource& source,
+                                std::filesystem::path& file_path) const {
+  std::lock_guard<std::mutex> lock(application_input_mutex_);
+  source = input_source_;
+  file_path = input_file_path_;
+}
+
+void Controller::SetInputFileState(const bool playing, const bool loop,
+                                   const double volume) {
+  std::lock_guard<std::mutex> lock(application_input_mutex_);
+  input_file_playing_ = playing;
+  input_file_loop_ = loop;
+  input_file_volume_ = std::clamp(std::isfinite(volume) ? volume : 1.0,
+                                  0.0, 1.0);
+}
+
+void Controller::GetInputFileState(bool& playing, bool& loop,
+                                   double& volume) const {
+  std::lock_guard<std::mutex> lock(application_input_mutex_);
+  playing = input_file_playing_;
+  loop = input_file_loop_;
+  volume = input_file_volume_;
+}
+
+void Controller::SetAdditionalInputSource(const common::InputSource source,
+                                           std::filesystem::path file_path) {
+  std::lock_guard<std::mutex> lock(application_input_mutex_);
+  // Audio Files is no longer a selectable additional source.  Old state is
+  // migrated to Off so it cannot start a hidden decoder on the next open.
+  additional_input_source_ = source == common::InputSource::kAudioFile
+                                 ? common::InputSource::kOff
+                                 : source;
+  additional_input_file_path_ = std::filesystem::path{};
+}
+
+void Controller::GetAdditionalInputSource(
+    common::InputSource& source, std::filesystem::path& file_path) const {
+  std::lock_guard<std::mutex> lock(application_input_mutex_);
+  source = additional_input_source_;
+  file_path = additional_input_file_path_;
+}
+
+void Controller::SetAdditionalInputFileState(const bool playing,
+                                              const bool loop,
+                                              const double volume) {
+  std::lock_guard<std::mutex> lock(application_input_mutex_);
+  additional_input_file_playing_ = playing;
+  additional_input_file_loop_ = loop;
+  additional_input_file_volume_ =
+      std::clamp(std::isfinite(volume) ? volume : 1.0, 0.0, 1.0);
+}
+
+void Controller::GetAdditionalInputFileState(bool& playing, bool& loop,
+                                              double& volume) const {
+  std::lock_guard<std::mutex> lock(application_input_mutex_);
+  playing = additional_input_file_playing_;
+  loop = additional_input_file_loop_;
+  volume = additional_input_file_volume_;
+}
+
+void Controller::GetApplicationInputStatus(
+    common::ApplicationInputStatus& status, std::string& error) const {
+  status = application_input_status_.load(std::memory_order_acquire);
+  std::lock_guard<std::mutex> lock(application_input_mutex_);
+  error = application_input_error_;
+}
+
 void Controller::SetRecordingSelection(const common::RecordingMode mode,
                                        std::filesystem::path path) {
   std::lock_guard<std::mutex> lock(recording_mutex_);
-  recording_mode_ = mode;
+  recording_mode_ = common::NormalizeRecordingMode(mode);
   recording_path_ = std::move(path);
 }
 
@@ -431,6 +646,28 @@ void Controller::GetRecordingSelection(common::RecordingMode& mode,
   std::lock_guard<std::mutex> lock(recording_mutex_);
   mode = recording_mode_;
   path = recording_path_;
+}
+
+void Controller::SetRecordingVoiceDelay(const std::int32_t delay_ms) {
+  std::lock_guard<std::mutex> lock(recording_mutex_);
+  recording_voice_delay_ms_ = common::ClampBgmDelayMs(delay_ms);
+}
+
+auto Controller::GetRecordingVoiceDelay() const -> std::int32_t {
+  std::lock_guard<std::mutex> lock(recording_mutex_);
+  return recording_voice_delay_ms_;
+}
+
+void Controller::SetRecordingAdditionalInputGain(const double gain_db) {
+  std::lock_guard<std::mutex> lock(recording_mutex_);
+  recording_additional_input_gain_db_ = std::clamp(
+      gain_db, common::kMinAdditionalInputGainDb,
+      common::kMaxAdditionalInputGainDb);
+}
+
+auto Controller::GetRecordingAdditionalInputGain() const -> double {
+  std::lock_guard<std::mutex> lock(recording_mutex_);
+  return recording_additional_input_gain_db_;
 }
 
 void Controller::GetRecordingStatus(common::RecordingStatus& status) const {

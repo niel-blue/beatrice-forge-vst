@@ -86,6 +86,9 @@ enum class ParameterID : std::int16_t {
   // Shared post-conversion effects.
   kDeMud = kOutputEffectsParameterBase,
   kPresence = kOutputEffectsParameterBase + 1,
+  kDenoiseThreshold = kOutputEffectsParameterBase + 2,
+  kDenoiseReduction = kOutputEffectsParameterBase + 3,
+  kDenoiseHfCut = kOutputEffectsParameterBase + 4,
   kReverbMix = kOutputEffectsParameterBase + 10,
   kReverbDecay = kOutputEffectsParameterBase + 11,
   kReverbTone = kOutputEffectsParameterBase + 12,

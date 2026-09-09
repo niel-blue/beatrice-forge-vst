@@ -62,6 +62,11 @@ using VSTGUI::CRect;
 using VSTGUI::CTextLabel;
 
 inline constexpr int kSliderKnobWidth = 6;
+// This tag is reserved for the recording-only voice-delay slider.  It is not
+// a VST parameter and is handled before parameter-schema lookup.
+inline constexpr int32_t kRecordingVoiceDelayControlTag = 0x7ffffffe;
+inline constexpr int32_t kRecordingApplicationInputGainControlTag =
+    0x7ffffffd;
 using VSTGUI::CView;
 using VSTGUI::IControlListener;
 using VSTGUI::kAntiAliasing;
@@ -667,6 +672,9 @@ class Slider : public CHorizontalSlider {
 
 class FileSelector : public CTextLabel {
  public:
+  using InitialDirectoryProvider =
+      std::function<std::filesystem::path()>;
+
   explicit FileSelector(const CRect& size,
                         IControlListener* listener_ = nullptr, int32_t tag_ = 0,
                         CBitmap* background = nullptr)
@@ -676,6 +684,10 @@ class FileSelector : public CTextLabel {
   }
   explicit FileSelector(const CRect& size, const UTF8String& text = "")
       : CTextLabel(size, text) {}
+
+  void SetInitialDirectoryProvider(InitialDirectoryProvider provider) {
+    initial_directory_provider_ = std::move(provider);
+  }
 
   auto onMouseDown(CPoint& where, const CButtonState& buttons)
       -> CMouseEventResult override {
@@ -691,6 +703,14 @@ class FileSelector : public CTextLabel {
       auto* const selector =
           CNewFileSelector::create(getFrame(), CNewFileSelector::kSelectFile);
       if (selector) {
+        if (initial_directory_provider_) {
+          const auto initial_directory = initial_directory_provider_();
+          if (!initial_directory.empty()) {
+            const auto initial_directory_u8 = initial_directory.u8string();
+            selector->setInitialDirectory(reinterpret_cast<const char*>(
+                initial_directory_u8.c_str()));
+          }
+        }
         selector->addFileExtension(CFileExtension("TOML", "toml"));
         selector->run(
             [self = VSTGUI::shared(this)](CNewFileSelector* sender) -> void {
@@ -745,6 +765,7 @@ class FileSelector : public CTextLabel {
 
  private:
   std::filesystem::path file_;
+  InitialDirectoryProvider initial_directory_provider_;
   bool pressed_ = false;
 };
 

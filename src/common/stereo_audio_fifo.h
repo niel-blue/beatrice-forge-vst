@@ -13,9 +13,10 @@
 namespace beatrice::common {
 
 // A bounded single-producer/single-consumer FIFO for a secondary audio path.
-// The VST process callback is the producer and the WASAPI worker is the
-// consumer. Push/Pop never allocate or lock; a complete block is dropped when
-// there is not enough room, keeping the producer's timing deterministic.
+// The producer and consumer are intentionally owned by the caller because
+// this FIFO is shared by both directions of the VST/WASAPI bridge. Push/Pop
+// never allocate or lock; a complete block is dropped when there is not enough
+// room, keeping the producer's timing deterministic.
 class StereoAudioFifo final {
  public:
   explicit StereoAudioFifo(const std::size_t capacity)
@@ -60,6 +61,19 @@ class StereoAudioFifo final {
     const auto write = write_.load(std::memory_order_acquire);
     const auto read = read_.load(std::memory_order_acquire);
     return write > read ? std::min(write - read, frames_.size()) : 0;
+  }
+
+  [[nodiscard]] auto UnderrunCount() const noexcept -> std::uint64_t {
+    return underrun_count_.load(std::memory_order_relaxed);
+  }
+
+  [[nodiscard]] auto OverflowCount() const noexcept -> std::uint64_t {
+    return overflow_count_.load(std::memory_order_relaxed);
+  }
+
+  void ResetStats() noexcept {
+    underrun_count_.store(0, std::memory_order_relaxed);
+    overflow_count_.store(0, std::memory_order_relaxed);
   }
 
   void DiscardAll() noexcept {

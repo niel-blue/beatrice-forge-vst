@@ -33,6 +33,9 @@ auto MakePresetDocument(const std::vector<Preset>& presets,
         {"input_gain", preset.input_gain},
         {"output_gain", preset.output_gain},
         {"compensated_drive", preset.compensated_drive},
+        {"denoise_threshold", preset.denoise_threshold},
+        {"denoise_reduction", preset.denoise_reduction},
+        {"denoise_hf_cut", preset.denoise_hf_cut},
         {"de_mud", preset.de_mud},
         {"presence", preset.presence},
         {"reverb_mix", preset.reverb_mix},
@@ -89,6 +92,12 @@ void ReadPresetDocument(const toml::value& root, std::vector<Preset>& presets,
           .output_gain = toml::find_or<double>(entry, "output_gain", 0.0),
           .compensated_drive =
               toml::find_or<double>(entry, "compensated_drive", 0.0),
+          .denoise_threshold = toml::find_or<double>(
+              entry, "denoise_threshold", kDenoiseThresholdDefaultDb),
+          .denoise_reduction = toml::find_or<double>(
+              entry, "denoise_reduction", kDenoiseReductionDefaultDb),
+          .denoise_hf_cut = toml::find_or<double>(
+              entry, "denoise_hf_cut", kDenoiseHfCutDefaultHz),
           .de_mud = toml::find_or<double>(
               entry, "de_mud",
               toml::find_or<double>(entry, "clarity", 0.0)),

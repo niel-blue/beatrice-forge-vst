@@ -64,6 +64,9 @@ enum class ControlHelpID : std::uint16_t {
   // EFFECTS.
   kDeMud = 0x0800,
   kPresence = 0x0801,
+  kDenoiseThreshold = 0x0802,
+  kDenoiseReduction = 0x0803,
+  kDenoiseHfCut = 0x0804,
   kReverbMix = 0x0810,
   kReverbDecay = 0x0811,
   kReverbTone = 0x0812,
@@ -80,6 +83,15 @@ enum class ControlHelpID : std::uint16_t {
   kRecordingMode = 0x0908,
   kRecording = 0x0909,
   kRecordingBrowse = 0x090A,
+  kApplicationInputRefresh = 0x090B,
+  kAdditionalInput = 0x090C,
+  kBgmDelay = 0x090D,
+  // Compatibility alias for callers from older UI revisions.
+  kVoiceDelay = kBgmDelay,
+  kRecordingApplicationInputGain = 0x090E,
+  kApplicationInput = 0x090F,
+  kAdditionalBgm = 0x0910,
+  kBgmOutputGain = 0x0911,
 
   // VST-only optional direct WASAPI output.
   kVstOutputDevice = 0x0B00,
@@ -168,6 +180,12 @@ inline constexpr auto kControlHelpDefinitions =
          "export_preset_list"},
         {ControlHelpID::kDeMud, ControlHelpSection::kEffects, "de_mud"},
         {ControlHelpID::kPresence, ControlHelpSection::kEffects, "presence"},
+        {ControlHelpID::kDenoiseThreshold, ControlHelpSection::kEffects,
+         "denoise_threshold"},
+        {ControlHelpID::kDenoiseReduction, ControlHelpSection::kEffects,
+         "denoise_reduction"},
+        {ControlHelpID::kDenoiseHfCut, ControlHelpSection::kEffects,
+         "denoise_hf_cut"},
         {ControlHelpID::kReverbMix, ControlHelpSection::kEffects,
          "reverb_mix"},
         {ControlHelpID::kReverbDecay, ControlHelpSection::kEffects,
@@ -196,6 +214,21 @@ inline constexpr auto kControlHelpDefinitions =
          "recording"},
         {ControlHelpID::kRecordingBrowse,
          ControlHelpSection::kStandaloneInOut, "recording_browse"},
+        {ControlHelpID::kApplicationInputRefresh,
+         ControlHelpSection::kStandaloneInOut, "application_input_refresh"},
+        {ControlHelpID::kAdditionalInput,
+         ControlHelpSection::kStandaloneInOut, "additional_input"},
+        {ControlHelpID::kBgmDelay, ControlHelpSection::kStandaloneInOut,
+         "bgm_delay"},
+        {ControlHelpID::kRecordingApplicationInputGain,
+          ControlHelpSection::kStandaloneInOut,
+          "recording_application_input_gain"},
+        {ControlHelpID::kApplicationInput,
+         ControlHelpSection::kStandaloneInOut, "application_input"},
+        {ControlHelpID::kAdditionalBgm, ControlHelpSection::kVstInOut,
+         "additional_bgm"},
+        {ControlHelpID::kBgmOutputGain, ControlHelpSection::kVstInOut,
+         "bgm_output_gain"},
         {ControlHelpID::kVstOutputDevice, ControlHelpSection::kVstInOut,
          "vst_output_device"},
         {ControlHelpID::kVstWasapiExclusive, ControlHelpSection::kVstInOut,
@@ -263,6 +296,12 @@ inline constexpr auto kControlHelpDefinitions =
       return ControlHelpID::kDeMud;
     case ParameterID::kPresence:
       return ControlHelpID::kPresence;
+    case ParameterID::kDenoiseThreshold:
+      return ControlHelpID::kDenoiseThreshold;
+    case ParameterID::kDenoiseReduction:
+      return ControlHelpID::kDenoiseReduction;
+    case ParameterID::kDenoiseHfCut:
+      return ControlHelpID::kDenoiseHfCut;
     case ParameterID::kReverbMix:
       return ControlHelpID::kReverbMix;
     case ParameterID::kReverbDecay:

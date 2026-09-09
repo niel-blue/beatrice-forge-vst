@@ -3,6 +3,7 @@
 #ifndef BEATRICE_VST_EDITOR_H_
 #define BEATRICE_VST_EDITOR_H_
 
+#include <chrono>
 #include <map>
 #include <memory>
 #include <optional>
@@ -22,6 +23,8 @@
 #include "common/model_config.h"
 #include "common/audio_recorder.h"
 #include "common/recording_paths.h"
+#include "common/application_input.h"
+#include "common/input_source.h"
 #include "common/preset.h"
 #include "common/simple_morph.h"
 #include "common/voice_morph_state.h"
@@ -49,6 +52,8 @@ class VoiceSelectorView;
 class SurfacePanel;
 class VerticalScrollView;
 class GlowingActionLabel;
+class FileProgressView;
+class FileVolumeView;
 class LevelIndicator;
 
 // NOLINTNEXTLINE(misc-multiple-inheritance)
@@ -74,7 +79,11 @@ class Editor : public Steinberg::Vst::VSTGUIEditor, public IControlListener {
   void endEdit(Steinberg::int32 index) SMTG_OVERRIDE;
   void SyncValue(ParamID param_id, float plain_value);
   void SyncStringValue(ParamID param_id, const std::u8string& value);
-  void SetAudioLevels(float input_peak, float output_peak);
+  // output_peak is the converted-voice peak. The optional external peak is
+  // the post-mix value used by the VST direct-output meter.
+  void SetAudioLevels(float input_peak, float output_peak,
+                      float external_output_peak = -1.0F);
+  void SetRecordingApplicationInputLevel(float peak);
   void SyncVstExternalState();
   void valueChanged(CControl* pControl) SMTG_OVERRIDE;
   // auto notify(CBaseObject* sender,
@@ -127,6 +136,8 @@ class Editor : public Steinberg::Vst::VSTGUIEditor, public IControlListener {
   // which the host has already supplied.
   void CreateNewPreset(bool reset_state = true);
   [[nodiscard]] auto CurrentModelVoicePresetName() -> std::string;
+  [[nodiscard]] auto ModelDialogInitialDirectory() const
+      -> std::filesystem::path;
   auto RenameSelectedPresetFromCurrentModelVoice() -> bool;
   void ApplyPreset(int index);
   void RenamePreset(int index, const std::string& name);
@@ -168,9 +179,26 @@ class Editor : public Steinberg::Vst::VSTGUIEditor, public IControlListener {
   void SendVstRecordingSelection();
   void SendVstRecordingStop();
   void RefreshVstWasapiDevices();
+  void RefreshVstApplicationInputs();
+  void SendVstApplicationInputSelection();
+  void SendVstApplicationInputOff();
+  void SendVstApplicationInputMainOff();
+  void SendVstApplicationInputClear();
+  void SendVstAdditionalInputSelection();
+  void SendVstAdditionalInputOff();
+  void UpdateVstApplicationInputControls();
+  void UpdateVstAdditionalInputControls();
   void SendVstDirectWasapiSelection();
   void SendVstDirectWasapiOff();
   void UpdateVstDirectWasapiControls();
+  void OpenVstAudioFile(bool additional);
+  void SetVstFilePlaying(bool additional, bool playing);
+  void StopVstFilePlayback(bool additional);
+  void SeekVstFile(bool additional, double position);
+  void ToggleVstFileLoop(bool additional);
+  void SetVstFileVolume(bool additional, double volume);
+  void UpdateVstFileControls(bool additional);
+  void SendVstFileConfig(bool additional, bool send_seek = true);
 
   std::map<ParamID, CControl*> controls_;
   CFontRef font_, font_bold_, font_description_, font_small_, font_small_bold_,
@@ -210,6 +238,7 @@ class Editor : public Steinberg::Vst::VSTGUIEditor, public IControlListener {
   bool preset_save_pending_ = false;
   VSTGUI::SharedPointer<VSTGUI::CVSTGUITimer> preset_save_timer_;
   VSTGUI::SharedPointer<VSTGUI::CVSTGUITimer> audio_level_timer_;
+  std::chrono::steady_clock::time_point next_application_input_refresh_{};
   bool rename_selected_preset_after_model_load_ = false;
   PresetPanel* preset_panel_ = nullptr;
   VerticalScrollView* effects_scroll_ = nullptr;
@@ -219,14 +248,67 @@ class Editor : public Steinberg::Vst::VSTGUIEditor, public IControlListener {
   VerticalScrollView* vst_inout_scroll_ = nullptr;
   SurfacePanel* vst_inout_panel_ = nullptr;
   VSTGUI::COptionMenu* vst_output_device_menu_ = nullptr;
-  VSTGUI::CCheckBox* vst_exclusive_checkbox_ = nullptr;
+  VSTGUI::COptionMenu* vst_input_source_menu_ = nullptr;
+  VSTGUI::COptionMenu* vst_application_input_menu_ = nullptr;
+  VSTGUI::CView* vst_application_input_chevron_ = nullptr;
+  CTextLabel* vst_application_input_label_ = nullptr;
+  GlowingActionLabel* vst_application_input_refresh_button_ = nullptr;
+  LevelIndicator* vst_application_input_level_ = nullptr;
+  CViewContainer* vst_input_file_controls_ = nullptr;
+  CTextLabel* vst_input_file_name_label_ = nullptr;
+  CTextLabel* vst_input_file_time_label_ = nullptr;
+  CTextLabel* vst_input_file_volume_label_ = nullptr;
+  FileProgressView* vst_input_file_progress_ = nullptr;
+  FileVolumeView* vst_input_file_volume_view_ = nullptr;
+  GlowingActionLabel* vst_input_file_open_button_ = nullptr;
+  GlowingActionLabel* vst_input_file_play_button_ = nullptr;
+  GlowingActionLabel* vst_input_file_pause_button_ = nullptr;
+  GlowingActionLabel* vst_input_file_stop_button_ = nullptr;
+  GlowingActionLabel* vst_input_file_loop_button_ = nullptr;
+  VSTGUI::COptionMenu* vst_additional_input_source_menu_ = nullptr;
+  VSTGUI::CView* vst_additional_input_source_chevron_ = nullptr;
+  GlowingActionLabel* vst_additional_input_refresh_button_ = nullptr;
+  LevelIndicator* vst_recording_application_input_level_ = nullptr;
+  CViewContainer* vst_additional_file_controls_ = nullptr;
+  CTextLabel* vst_additional_file_name_label_ = nullptr;
+  CTextLabel* vst_additional_file_time_label_ = nullptr;
+  CTextLabel* vst_additional_file_volume_label_ = nullptr;
+  FileProgressView* vst_additional_file_progress_ = nullptr;
+  FileVolumeView* vst_additional_file_volume_view_ = nullptr;
+  GlowingActionLabel* vst_additional_file_open_button_ = nullptr;
+  GlowingActionLabel* vst_additional_file_play_button_ = nullptr;
+  GlowingActionLabel* vst_additional_file_pause_button_ = nullptr;
+  GlowingActionLabel* vst_additional_file_stop_button_ = nullptr;
+  GlowingActionLabel* vst_additional_file_loop_button_ = nullptr;
   LevelIndicator* vst_output_level_ = nullptr;
   std::vector<std::string> vst_output_device_ids_;
+  std::vector<common::ApplicationInputInfo> vst_application_inputs_;
+  std::uint32_t vst_application_input_process_id_ = 0;
+  std::uint32_t vst_additional_input_process_id_ = 0;
+  std::string vst_application_input_identity_;
+  std::string vst_additional_input_identity_;
+  common::InputSource vst_input_source_ = common::InputSource::kDawInput;
+  common::InputSource vst_additional_input_source_ = common::InputSource::kOff;
+  std::filesystem::path vst_input_file_path_;
+  std::filesystem::path vst_additional_file_path_;
+  bool vst_input_file_playing_ = false;
+  bool vst_input_file_loop_ = false;
+  bool vst_additional_file_playing_ = false;
+  bool vst_additional_file_loop_ = false;
+  double vst_input_file_volume_ = 1.0;
+  double vst_additional_file_volume_ = 1.0;
+  double vst_input_file_position_ = 0.0;
+  double vst_additional_file_position_ = 0.0;
   VSTGUI::COptionMenu* vst_recording_mode_menu_ = nullptr;
+  Slider* vst_recording_application_input_gain_slider_ = nullptr;
+  Slider* vst_voice_delay_slider_ = nullptr;
   GlowingActionLabel* vst_record_button_ = nullptr;
   GlowingActionLabel* vst_record_path_button_ = nullptr;
   VSTGUI::CTextLabel* vst_recording_status_label_ = nullptr;
-  common::RecordingMode vst_recording_mode_ = common::RecordingMode::kOff;
+  common::RecordingMode vst_recording_mode_ = common::RecordingMode::kOutput;
+  double vst_recording_application_input_gain_db_ =
+      common::kDefaultAdditionalInputGainDb;
+  std::int32_t vst_voice_delay_ms_ = 0;
   std::filesystem::path vst_recording_path_;
   GlowingActionLabel* presets_tab_ = nullptr;
   GlowingActionLabel* effects_tab_ = nullptr;

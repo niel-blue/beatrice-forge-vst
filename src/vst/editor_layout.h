@@ -80,9 +80,8 @@ inline constexpr auto kSplitTabHeight = 30.0;
 inline constexpr auto kTabContentGap = 3.0;
 inline constexpr auto kPanelSectionGap = 4.0;
 // One adjustment point for the complete standalone IN/OUT body.  The title,
-// source selector, meters and file player all move together when this value
-// is changed; the tab row itself remains fixed.  The title rectangle below
-// compensates for the extra content-only shift so AUDIO DEVICES stays put.
+// source selector, meters, section headings and file player all move together
+// when this value is changed; the tab row itself remains fixed.
 // Align the standalone IN/OUT heading and its first controls with the
 // compact, top-anchored titles used by the EFFECTS panels.  All controls in
 // the page are translated together so the file-player and device sections
@@ -114,24 +113,25 @@ struct RecordingBlockGeometry {
   VSTGUI::CRect title;
   VSTGUI::CRect mode_label;
   VSTGUI::CRect mode_menu;
+  VSTGUI::CRect additional_input_label;
+  VSTGUI::CRect additional_input_menu;
+  VSTGUI::CRect additional_input_meter;
+  VSTGUI::CRect additional_input_gain;
   VSTGUI::CRect record_button;
   VSTGUI::CRect browse_button;
   VSTGUI::CRect status;
 };
 
-inline auto RecordingBlockGeometryAt(const double top)
+inline auto RecordingBlockGeometryAt(const double top,
+                                     const bool include_additional_input = true)
     -> RecordingBlockGeometry {
   const auto title_height = kPanelTitleBottom - kPanelTitleTop;
   const auto title = VSTGUI::CRect(kPanelContentInset, top, kControlRight,
                                    top + title_height);
-  const auto mode_label_top = title.bottom + kPanelSectionGap;
-  const auto mode_label = VSTGUI::CRect(
-      kPanelContentInset, mode_label_top, kControlRight,
-      mode_label_top + kControlLabelHeight);
-  const auto mode_menu = VSTGUI::CRect(
-      kPanelContentInset, mode_label.bottom, kControlRight,
-      mode_label.bottom + kControlMenuHeight);
-  const auto action_top = mode_menu.bottom + kPanelGap;
+  // Put the primary recording actions directly below the section title.  The
+  // mode and source controls follow below them so the action remains visible
+  // at a glance in both the standalone and VST layouts.
+  const auto action_top = title.bottom + kPanelSectionGap;
   const auto action_bottom = action_top + kResetButtonHeight;
   const auto record_button = VSTGUI::CRect(
       kPanelContentInset, action_top,
@@ -143,7 +143,37 @@ inline auto RecordingBlockGeometryAt(const double top)
   const auto status = VSTGUI::CRect(
       browse_button.right + kPanelSectionGap, action_top, kControlRight,
       action_bottom);
-  return {title, mode_label, mode_menu, record_button, browse_button, status};
+
+  const auto mode_label_top = action_bottom + kPanelGap;
+  const auto mode_label = VSTGUI::CRect(
+      kPanelContentInset, mode_label_top, kControlRight,
+      mode_label_top + kControlLabelHeight);
+  const auto mode_menu = VSTGUI::CRect(
+      kPanelContentInset, mode_label.bottom, kControlRight,
+      mode_label.bottom + kControlMenuHeight);
+  auto additional_input_label = VSTGUI::CRect{};
+  auto additional_input_menu = VSTGUI::CRect{};
+  auto additional_input_meter = VSTGUI::CRect{};
+  auto additional_input_gain = VSTGUI::CRect{};
+  if (include_additional_input) {
+    additional_input_label = VSTGUI::CRect(
+        kPanelContentInset, mode_menu.bottom + kPanelGap, kControlRight,
+        mode_menu.bottom + kPanelGap + kControlLabelHeight);
+    additional_input_menu = VSTGUI::CRect(
+        kPanelContentInset, additional_input_label.bottom, kControlRight,
+        additional_input_label.bottom + kControlMenuHeight);
+    additional_input_meter = VSTGUI::CRect(
+        kPanelContentInset, additional_input_menu.bottom + kPanelSectionGap,
+        kControlRight,
+        additional_input_menu.bottom + kPanelSectionGap +
+            kLevelIndicatorHeight);
+    additional_input_gain = VSTGUI::CRect(
+        kPanelContentInset, additional_input_meter.bottom + kPanelGap,
+        kControlRight, additional_input_meter.bottom + kPanelGap + 42.0);
+  }
+  return {title, mode_label, mode_menu, additional_input_label,
+          additional_input_menu, additional_input_meter, additional_input_gain,
+          record_button, browse_button, status};
 }
 
 // Standalone IN/OUT geometry.  These are deliberately named by their UI
@@ -157,31 +187,113 @@ inline constexpr auto kStandaloneInOutInputSourceLabelRect =
     VSTGUI::CRect(kPanelContentInset, 44.0, kControlRight, 64.0);
 inline constexpr auto kStandaloneInOutInputSourceMenuRect =
     VSTGUI::CRect(kPanelContentInset, 64.0, 160.0, 98.0);
+
+// The compact source selector leaves room for the BROWSE action only while
+// Audio Files is selected. Live-input modes use the same right edge as the
+// other standalone selectors.
+inline auto StandaloneInOutInputSourceMenuRect(
+    const bool /*file_input_enabled*/) -> VSTGUI::CRect {
+  return {kPanelContentInset, kStandaloneInOutInputSourceMenuRect.top,
+          kControlRight, kStandaloneInOutInputSourceMenuRect.bottom};
+}
+
 inline constexpr auto kStandaloneInOutInputLabelRect =
     VSTGUI::CRect(kPanelContentInset, 108.0, kControlRight, 128.0);
 inline constexpr auto kStandaloneInOutInputMenuRect =
     VSTGUI::CRect(kPanelContentInset, 128.0, kControlRight, 162.0);
 inline constexpr auto kStandaloneInOutInputMeterRect =
     VSTGUI::CRect(kPanelContentInset, 168.0, kControlRight, 174.0);
-inline constexpr auto kStandaloneInOutOutputLabelRect =
-    VSTGUI::CRect(kPanelContentInset, 180.0, kControlRight, 200.0);
-inline constexpr auto kStandaloneInOutOutputMenuRect =
-    VSTGUI::CRect(kPanelContentInset, 200.0, kControlRight, 234.0);
-inline constexpr auto kStandaloneInOutOutputMeterRect =
-    VSTGUI::CRect(kPanelContentInset, 240.0, kControlRight, 246.0);
-inline constexpr auto kStandaloneInOutMonitorLabelRect =
-    VSTGUI::CRect(kPanelContentInset, 252.0, kControlRight, 272.0);
-inline constexpr auto kStandaloneInOutMonitorMenuRect =
-    VSTGUI::CRect(kPanelContentInset, 272.0, kControlRight, 306.0);
-inline constexpr auto kStandaloneInOutMonitorMeterRect =
-    VSTGUI::CRect(kPanelContentInset, 312.0, kControlRight, 318.0);
-inline constexpr auto kStandaloneInOutBrowseRect =
-    VSTGUI::CRect(192.0, 71.0, 272.0, 91.0);
+
+// The standalone page uses the same semantic order as the VST IN/OUT page.
+// Its additional application input already existed as part of the recording
+// configuration.  The ADD BGM label occupies that row directly, without a
+// duplicate section heading, so the freed title height remains below.
+inline auto StandaloneInOutAdditionalInputLabelRect() -> VSTGUI::CRect {
+  const auto top = kStandaloneInOutInputMeterRect.bottom + kPanelSectionGap;
+  return {kPanelContentInset, top, kControlRight,
+          top + kControlLabelHeight};
+}
+
+inline auto StandaloneInOutAdditionalInputMenuRect() -> VSTGUI::CRect {
+  const auto label = StandaloneInOutAdditionalInputLabelRect();
+  return {kPanelContentInset, label.bottom, kControlRight,
+          label.bottom + kControlMenuHeight};
+}
+
+inline auto StandaloneInOutAdditionalInputMeterRect() -> VSTGUI::CRect {
+  const auto menu = StandaloneInOutAdditionalInputMenuRect();
+  const auto top = menu.bottom + kPanelSectionGap;
+  return {kPanelContentInset, top, kControlRight,
+          top + kLevelIndicatorHeight};
+}
+
+inline auto StandaloneInOutAdditionalInputGainRect() -> VSTGUI::CRect {
+  const auto meter = StandaloneInOutAdditionalInputMeterRect();
+  const auto top = meter.bottom + kPanelGap;
+  return {kPanelContentInset, top, kControlRight, top + 42.0};
+}
+
+inline auto StandaloneInOutVoiceDelayRect() -> VSTGUI::CRect {
+  const auto gain = StandaloneInOutAdditionalInputGainRect();
+  const auto top = gain.bottom + kPanelGap;
+  return {kPanelContentInset, top, kControlRight, top + 42.0};
+}
+
+inline auto StandaloneInOutOutputTitleRect() -> VSTGUI::CRect {
+  const auto voice_delay = StandaloneInOutVoiceDelayRect();
+  const auto top = voice_delay.bottom + kPanelGap;
+  return {kPanelContentInset, top, kControlRight,
+          top + (kPanelTitleBottom - kPanelTitleTop)};
+}
+
+inline const auto kStandaloneInOutOutputLabelRect = [] {
+  const auto title = StandaloneInOutOutputTitleRect();
+  const auto top = title.bottom + kPanelSectionGap;
+  return VSTGUI::CRect(kPanelContentInset, top, kControlRight,
+                       top + kControlLabelHeight);
+}();
+inline const auto kStandaloneInOutOutputMenuRect = [] {
+  const auto label = kStandaloneInOutOutputLabelRect;
+  return VSTGUI::CRect(kPanelContentInset, label.bottom, kControlRight,
+                       label.bottom + kControlMenuHeight);
+}();
+inline const auto kStandaloneInOutOutputMeterRect = [] {
+  const auto menu = kStandaloneInOutOutputMenuRect;
+  const auto top = menu.bottom + kPanelSectionGap;
+  return VSTGUI::CRect(kPanelContentInset, top, kControlRight,
+                       top + kLevelIndicatorHeight);
+}();
+inline const auto kStandaloneInOutMonitorLabelRect = [] {
+  const auto top = kStandaloneInOutOutputMeterRect.bottom + kPanelGap;
+  return VSTGUI::CRect(kPanelContentInset, top, kControlRight,
+                       top + kControlLabelHeight);
+}();
+inline const auto kStandaloneInOutMonitorMenuRect = [] {
+  const auto label = kStandaloneInOutMonitorLabelRect;
+  return VSTGUI::CRect(kPanelContentInset, label.bottom, kControlRight,
+                       label.bottom + kControlMenuHeight);
+}();
+inline const auto kStandaloneInOutMonitorMeterRect = [] {
+  const auto menu = kStandaloneInOutMonitorMenuRect;
+  const auto top = menu.bottom + kPanelSectionGap;
+  return VSTGUI::CRect(kPanelContentInset, top, kControlRight,
+                       top + kLevelIndicatorHeight);
+}();
+inline const auto kStandaloneInOutAdditionalInputLabelRect =
+    StandaloneInOutAdditionalInputLabelRect();
+inline const auto kStandaloneInOutAdditionalInputMenuRect =
+    StandaloneInOutAdditionalInputMenuRect();
+inline const auto kStandaloneInOutAdditionalInputMeterRect =
+    StandaloneInOutAdditionalInputMeterRect();
+inline const auto kStandaloneInOutAdditionalInputGainRect =
+    StandaloneInOutAdditionalInputGainRect();
+inline constexpr auto kStandaloneInOutFileOpenRect =
+    VSTGUI::CRect(12.0, 0.0, 92.0, 20.0);
 inline constexpr auto kStandaloneInOutFilePlayerGap = 5.0;
 inline constexpr auto kStandaloneInOutFileControlsRect = VSTGUI::CRect(
     0.0, 108.0, kColumnWidth, 174.0 + kStandaloneInOutFilePlayerGap);
 inline constexpr auto kStandaloneInOutFileNameRect =
-    VSTGUI::CRect(12.0, 0.0, kControlRight, 18.0);
+    VSTGUI::CRect(100.0, 0.0, kControlRight, 20.0);
 inline constexpr auto kStandaloneInOutFilePlaybackRect = VSTGUI::CRect(
     0.0, 18.0 + kStandaloneInOutFilePlayerGap, kColumnWidth,
     66.0 + kStandaloneInOutFilePlayerGap);
@@ -212,22 +324,20 @@ inline constexpr auto kStandaloneInOutProgressRect =
     VSTGUI::CRect(12.0, 29.0, kStandaloneInOutPlayerBarRight, 39.0);
 inline constexpr auto kStandaloneInOutTimeRect =
     VSTGUI::CRect(kStandaloneInOutPlayerValueLeft, 25.0, 296.0, 45.0);
-// Reserve the status area before starting the recording section.  The status
-// label itself is single-line so an error message cannot leave punctuation on
-// a separate line.
-inline constexpr auto kStandaloneInOutStatusRect =
-    VSTGUI::CRect(kPanelContentInset, 326.0, kControlRight, 354.0);
-// Standalone recording controls follow the device status. These aliases keep
-// existing callers source-compatible while deriving every rectangle from the
-// same block factory used by the VST IN/OUT page.
+// The standalone status line is no longer rendered.  Start the recording
+// block immediately after the monitor meter, following the new ADD BGM and
+// OUTPUT sections.  Recording does not duplicate the additional-input rows;
+// those controls now live under ADD BGM above.
 inline const auto kStandaloneInOutRecordingGeometry = RecordingBlockGeometryAt(
-    366.0 + kStandaloneInOutRecordingOffsetY);
+    kStandaloneInOutMonitorMeterRect.bottom + kPanelGap, false);
 inline const auto& kStandaloneInOutRecordingTitleRect =
     kStandaloneInOutRecordingGeometry.title;
 inline const auto& kStandaloneInOutRecordingModeLabelRect =
     kStandaloneInOutRecordingGeometry.mode_label;
 inline const auto& kStandaloneInOutRecordingModeMenuRect =
     kStandaloneInOutRecordingGeometry.mode_menu;
+inline const auto kStandaloneInOutVoiceDelayRect =
+    StandaloneInOutVoiceDelayRect();
 inline const auto& kStandaloneInOutRecordButtonRect =
     kStandaloneInOutRecordingGeometry.record_button;
 inline const auto& kStandaloneInOutRecordPathButtonRect =
@@ -317,7 +427,12 @@ inline constexpr auto kSettingsTabBodyBottom = 432.0;
 // Effects column. Each group has its own surface and reset action. The panel
 // heights are derived from the shared slider rhythm so future controls cannot
 // overlap the PRESETS/EFFECTS tabs or one another.
-inline constexpr auto kEffectsClarityPanelTop = kNonPresetTabBodyTop;
+inline constexpr auto kEffectsDenoisePanelTop = kNonPresetTabBodyTop;
+inline constexpr auto kEffectsDenoisePanelBottom =
+    kEffectsDenoisePanelTop + kSettingsSliderTop +
+    3.0 * kSettingsSliderStride + 6.0;
+inline constexpr auto kEffectsClarityPanelTop =
+    kEffectsDenoisePanelBottom + kPanelGap;
 inline constexpr auto kEffectsClarityPanelBottom =
     kEffectsClarityPanelTop + kSettingsSliderTop +
     2.0 * kSettingsSliderStride + 6.0;
@@ -605,16 +720,133 @@ inline auto ContentRect(const double top, const double bottom,
   return {inset, top, right, bottom};
 }
 
-// VST-only direct output page. Its geometry is derived from the same panel
-// title, first-control, menu, meter and switch metrics used by the other
-// pages. Keeping the dependency chain here prevents a later tab adjustment
-// from leaving IN/OUT controls at an unrelated hand-tuned position.
-inline auto VstInOutTitleRect() -> VSTGUI::CRect {
+// VST IN/OUT geometry. The input source block comes first so the optional
+// Application Input selector has the same vertical rhythm as every other
+// dropdown. The output and recording blocks are derived from it rather than
+// carrying independent coordinates.
+inline auto VstInOutInputTitleRect() -> VSTGUI::CRect {
   return PanelTitleRect(kControlRight);
 }
 
-inline auto VstInOutOutputLabelRect() -> VSTGUI::CRect {
+inline auto VstInOutInputSourceLabelRect() -> VSTGUI::CRect {
   const auto top = kSettingsSliderTop;
+  return ControlLabelRect(top,
+                          top + (kControlLabelBottom - kControlLabelTop));
+}
+
+inline auto VstInOutInputSourceMenuRect() -> VSTGUI::CRect {
+  const auto label = VstInOutInputSourceLabelRect();
+  return ContentRect(label.bottom,
+                     label.bottom + (kControlMenuBottom - kControlMenuTop));
+}
+
+inline auto VstInOutApplicationLabelRect() -> VSTGUI::CRect {
+  const auto source_menu = VstInOutInputSourceMenuRect();
+  // Consecutive dropdown controls use the standard full control margin.
+  const auto top = source_menu.bottom + kPanelGap;
+  return ControlLabelRect(top,
+                          top + (kControlLabelBottom - kControlLabelTop));
+}
+
+inline auto VstInOutApplicationMenuRect() -> VSTGUI::CRect {
+  const auto label = VstInOutApplicationLabelRect();
+  return ContentRect(label.bottom,
+                     label.bottom + (kControlMenuBottom - kControlMenuTop));
+}
+
+inline auto VstInOutApplicationMeterRect() -> VSTGUI::CRect {
+  const auto menu = VstInOutApplicationMenuRect();
+  const auto top = menu.bottom + kPanelSectionGap;
+  return ContentRect(top, top + kLevelIndicatorHeight);
+}
+
+// Legacy Audio Files geometry is retained below as a source reference only.
+// The active input modes no longer reserve this slot, so ADD BGM and the
+// sections below it close up naturally.
+inline constexpr auto kVstInOutFilePlayerHeight = 72.0;
+
+inline auto VstInOutApplicationFilePlayerRect() -> VSTGUI::CRect {
+  const auto label = VstInOutApplicationLabelRect();
+  return ContentRect(label.top, label.top + kVstInOutFilePlayerHeight);
+}
+
+// The optional BGM source is kept next to the primary conversion input.  It
+// is a separate source selector from INPUT SOURCE so an application can still
+// be converted while another application is selected as the added source.
+inline auto VstInOutAdditionalInputSourceLabelRect() -> VSTGUI::CRect {
+  const auto main_meter = VstInOutApplicationMeterRect();
+  const auto top = main_meter.bottom + kPanelGap;
+  return ControlLabelRect(top,
+                          top + (kControlLabelBottom - kControlLabelTop));
+}
+
+inline auto VstInOutAdditionalInputSourceMenuRect() -> VSTGUI::CRect {
+  const auto label = VstInOutAdditionalInputSourceLabelRect();
+  return ContentRect(label.bottom,
+                     label.bottom + (kControlMenuBottom - kControlMenuTop));
+}
+
+inline auto VstInOutAdditionalApplicationLabelRect() -> VSTGUI::CRect {
+  const auto source_menu = VstInOutAdditionalInputSourceMenuRect();
+  const auto top = source_menu.bottom + kPanelSectionGap;
+  return ControlLabelRect(top,
+                          top + (kControlLabelBottom - kControlLabelTop));
+}
+
+inline auto VstInOutAdditionalApplicationMenuRect() -> VSTGUI::CRect {
+  const auto label = VstInOutAdditionalApplicationLabelRect();
+  return ContentRect(label.bottom,
+                     label.bottom + (kControlMenuBottom - kControlMenuTop));
+}
+
+inline auto VstInOutAdditionalApplicationMeterRect() -> VSTGUI::CRect {
+  // The ADD BGM menu now contains Off and the application entries directly.
+  const auto menu = VstInOutAdditionalInputSourceMenuRect();
+  const auto top = menu.bottom + kPanelSectionGap;
+  return ContentRect(top, top + kLevelIndicatorHeight);
+}
+
+inline auto VstInOutAdditionalFilePlayerRect() -> VSTGUI::CRect {
+  const auto label = VstInOutAdditionalApplicationLabelRect();
+  return ContentRect(label.top, label.top + kVstInOutFilePlayerHeight);
+}
+
+// Lift only the BGM GAIN control slightly inside its existing slot. Voice
+// Delay follows it as part of the ADD BGM output-synchronization block.
+inline constexpr auto kVstInOutAdditionalInputGainOffsetY = -6.0;
+
+inline auto VstInOutAdditionalInputGainBaseRect() -> VSTGUI::CRect {
+  const auto additional_meter = VstInOutAdditionalApplicationMeterRect();
+  const auto top = additional_meter.bottom + kPanelGap;
+  return ContentRect(top, top + 42.0);
+}
+
+inline auto VstInOutAdditionalInputGainRect() -> VSTGUI::CRect {
+  auto rect = VstInOutAdditionalInputGainBaseRect();
+  rect.offset(0.0, kVstInOutAdditionalInputGainOffsetY);
+  return rect;
+}
+
+inline auto ApplicationInputRefreshRect(const VSTGUI::CRect& label)
+    -> VSTGUI::CRect {
+  constexpr auto width = 68.0;
+  return {kControlRight - width, label.top, kControlRight, label.bottom};
+}
+
+inline auto VstInOutVoiceDelayRect() -> VSTGUI::CRect {
+  const auto additional_gain = VstInOutAdditionalInputGainRect();
+  const auto top = additional_gain.bottom + kPanelGap;
+  return ContentRect(top, top + 42.0);
+}
+
+inline auto VstInOutTitleRect() -> VSTGUI::CRect {
+  const auto voice_delay = VstInOutVoiceDelayRect();
+  return PanelSectionTitleRect(voice_delay.bottom + kPanelGap,
+                               kControlRight);
+}
+
+inline auto VstInOutOutputLabelRect() -> VSTGUI::CRect {
+  const auto top = VstInOutTitleRect().bottom + kPanelSectionGap;
   return ControlLabelRect(top,
                           top + (kControlLabelBottom - kControlLabelTop));
 }
@@ -631,15 +863,17 @@ inline auto VstInOutOutputMeterRect() -> VSTGUI::CRect {
   return ContentRect(top, top + kLevelIndicatorHeight);
 }
 
-inline auto VstInOutExclusiveRect() -> VSTGUI::CRect {
+inline auto VstInOutRecordingGeometry() -> RecordingBlockGeometry {
   const auto meter = VstInOutOutputMeterRect();
-  const auto top = meter.bottom + kPanelGap;
-  return ContentRect(top, top + kSwitchHeight);
+  return RecordingBlockGeometryAt(meter.bottom + kPanelGap, false);
 }
 
-inline auto VstInOutRecordingGeometry() -> RecordingBlockGeometry {
-  const auto exclusive = VstInOutExclusiveRect();
-  return RecordingBlockGeometryAt(exclusive.bottom + kPanelGap);
+inline auto VstInOutRecordingApplicationInputGainRect() -> VSTGUI::CRect {
+  return VstInOutAdditionalInputGainRect();
+}
+
+inline auto VstInOutRecordingVoiceDelayRect() -> VSTGUI::CRect {
+  return VstInOutVoiceDelayRect();
 }
 
 inline auto ResetButtonRect(const double top = kPanelTitleTop)

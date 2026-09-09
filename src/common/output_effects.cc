@@ -109,6 +109,37 @@ void OutputEffects::SetPresence(const double amount) noexcept {
   presence_target_ = std::clamp(amount / 100.0, 0.0, 1.0);
 }
 
+void OutputEffects::SetDenoiseThreshold(const double threshold_db) noexcept {
+  const auto value = std::isfinite(threshold_db)
+                         ? std::clamp(threshold_db, kDenoiseThresholdMinDb,
+                                      kDenoiseThresholdMaxDb)
+                         : kDenoiseThresholdDefaultDb;
+  denoise_threshold_linear_target_ = std::pow(10.0, value / 20.0);
+}
+
+void OutputEffects::SetDenoiseReduction(const double reduction_db) noexcept {
+  const auto value = std::isfinite(reduction_db)
+                         ? std::clamp(reduction_db, kDenoiseReductionMinDb,
+                                      kDenoiseReductionMaxDb)
+                         : kDenoiseReductionDefaultDb;
+  denoise_reduction_db_target_ = value;
+  denoise_min_gain_target_ = std::pow(10.0, -value / 20.0);
+}
+
+void OutputEffects::SetDenoiseHfCut(const double frequency_hz) noexcept {
+  const auto value = std::isfinite(frequency_hz)
+                         ? std::clamp(frequency_hz, kDenoiseHfCutMinHz,
+                                      kDenoiseHfCutMaxHz)
+                         : kDenoiseHfCutDefaultHz;
+  denoise_hf_cut_hz_target_ = value;
+  if (coefficients_valid_) {
+    denoise_hf_cut_coefficient_target_ =
+        value >= kDenoiseHfCutMaxHz
+            ? 1.0
+            : LowPassCoefficient(std::min(value, sample_rate_ * 0.49));
+  }
+}
+
 void OutputEffects::SetReverbMix(const double mix) noexcept {
   reverb_mix_target_ = std::clamp(mix / 100.0, 0.0, 1.0);
 }
@@ -126,6 +157,12 @@ void OutputEffects::Reset() noexcept {
   low_180_ = 0.0;
   low_700_ = 0.0;
   low_2500_ = 0.0;
+  denoise_threshold_linear_ = denoise_threshold_linear_target_;
+  denoise_min_gain_ = denoise_min_gain_target_;
+  denoise_envelope_left_ = 0.0;
+  denoise_gain_left_ = 1.0;
+  denoise_hf_left_ = 0.0;
+  denoise_hf_cut_coefficient_ = denoise_hf_cut_coefficient_target_;
   de_mud_mix_ = de_mud_target_;
   presence_mix_ = presence_target_;
   reverb_mix_ = reverb_mix_target_;
@@ -160,6 +197,13 @@ void OutputEffects::UpdateConfiguration() {
     low_700_coefficient_ = 0.0;
     low_2500_coefficient_ = 0.0;
     control_smoothing_step_ = 1.0;
+    denoise_envelope_attack_coefficient_ = 1.0;
+    denoise_envelope_release_coefficient_ = 1.0;
+    denoise_gain_up_coefficient_ = 1.0;
+    denoise_gain_down_coefficient_ = 1.0;
+    denoise_parameter_smoothing_step_ = 1.0;
+    denoise_hf_cut_coefficient_target_ = 1.0;
+    denoise_hf_cut_coefficient_ = 1.0;
     left_combs_ = {};
     right_combs_ = {};
     left_all_passes_ = {};
@@ -172,6 +216,20 @@ void OutputEffects::UpdateConfiguration() {
   low_700_coefficient_ = LowPassCoefficient(700.0);
   low_2500_coefficient_ = LowPassCoefficient(2500.0);
   control_smoothing_step_ = 1.0 / (sample_rate_ * 0.020);
+  denoise_envelope_attack_coefficient_ =
+      1.0 - std::exp(-1.0 / (sample_rate_ * 0.005));
+  denoise_envelope_release_coefficient_ =
+      1.0 - std::exp(-1.0 / (sample_rate_ * 0.150));
+  denoise_gain_up_coefficient_ =
+      1.0 - std::exp(-1.0 / (sample_rate_ * 0.005));
+  denoise_gain_down_coefficient_ =
+      1.0 - std::exp(-1.0 / (sample_rate_ * 0.120));
+  denoise_parameter_smoothing_step_ = 1.0 / (sample_rate_ * 0.020);
+  denoise_hf_cut_coefficient_target_ =
+      denoise_hf_cut_hz_target_ >= kDenoiseHfCutMaxHz
+          ? 1.0
+          : LowPassCoefficient(
+                std::min(denoise_hf_cut_hz_target_, sample_rate_ * 0.49));
   for (auto i = std::size_t{0}; i < kNCombs; ++i) {
     left_combs_[i].Configure(kLeftCombDelays[i], sample_rate_);
     right_combs_[i].Configure(kRightCombDelays[i], sample_rate_);
@@ -213,8 +271,67 @@ void OutputEffects::Process(float* const left, float* const right,
     }
     return;
   }
+  ProcessDenoise(left, n_samples);
   ProcessClarity(left, n_samples);
   ProcessReverb(left, right, n_samples);
+}
+
+void OutputEffects::ProcessDenoise(float* const samples,
+                                   const int n_samples) noexcept {
+  const auto process_sample = [this](const float input, double& envelope,
+                                     double& gain, double& hf_state) -> float {
+    const auto magnitude = std::abs(static_cast<double>(input));
+    const auto envelope_coefficient =
+        magnitude > envelope ? denoise_envelope_attack_coefficient_
+                             : denoise_envelope_release_coefficient_;
+    envelope += envelope_coefficient * (magnitude - envelope);
+
+    const auto threshold = std::max(denoise_threshold_linear_, 1.0e-9);
+    const auto above_threshold =
+        std::clamp(envelope / threshold, 0.0, 1.0);
+    const auto target_gain = denoise_min_gain_ +
+                             (1.0 - denoise_min_gain_) * above_threshold;
+    const auto gain_coefficient = target_gain > gain
+                                      ? denoise_gain_up_coefficient_
+                                      : denoise_gain_down_coefficient_;
+    gain += gain_coefficient * (target_gain - gain);
+    const auto denoised = static_cast<double>(input) * gain;
+
+    if (denoise_hf_cut_coefficient_ >= 0.999999) {
+      hf_state = denoised;
+      return static_cast<float>(denoised);
+    }
+    hf_state += denoise_hf_cut_coefficient_ * (denoised - hf_state);
+    return static_cast<float>(hf_state);
+  };
+
+  const auto denoise_active = denoise_reduction_db_target_ > 0.0 ||
+                              denoise_hf_cut_hz_target_ < kDenoiseHfCutMaxHz;
+  if (!denoise_active) {
+    // Keep the state aligned with the dry signal while the effect is off so
+    // enabling it does not expose a stale filter or envelope value.
+    denoise_envelope_left_ = 0.0;
+    denoise_gain_left_ = 1.0;
+    denoise_hf_left_ = 0.0;
+    denoise_threshold_linear_ = denoise_threshold_linear_target_;
+    denoise_min_gain_ = denoise_min_gain_target_;
+    denoise_hf_cut_coefficient_ = denoise_hf_cut_coefficient_target_;
+    return;
+  }
+
+  for (auto i = 0; i < n_samples; ++i) {
+    denoise_threshold_linear_ += std::clamp(
+        denoise_threshold_linear_target_ - denoise_threshold_linear_,
+        -denoise_parameter_smoothing_step_, denoise_parameter_smoothing_step_);
+    denoise_min_gain_ += std::clamp(
+        denoise_min_gain_target_ - denoise_min_gain_,
+        -denoise_parameter_smoothing_step_, denoise_parameter_smoothing_step_);
+    denoise_hf_cut_coefficient_ += std::clamp(
+        denoise_hf_cut_coefficient_target_ - denoise_hf_cut_coefficient_,
+        -denoise_parameter_smoothing_step_, denoise_parameter_smoothing_step_);
+    samples[i] = process_sample(samples[i], denoise_envelope_left_,
+                                denoise_gain_left_, denoise_hf_left_);
+  }
 }
 
 void OutputEffects::ProcessClarity(float* const samples,

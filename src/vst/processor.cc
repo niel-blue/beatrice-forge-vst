@@ -47,6 +47,15 @@ Processor::Processor()
       direct_wasapi_output_([this](const DirectWasapiStatus status,
                                    const std::string& error) {
         SendDirectWasapiStatusMessage(status, error);
+      }),
+      application_input_([this](const common::ApplicationInputStatus status,
+                                const std::string& error) {
+        SendApplicationInputStatusMessage(status, error);
+      }),
+      additional_application_input_([this](
+          const common::ApplicationInputStatus status,
+          const std::string& error) {
+        SendApplicationInputStatusMessage(status, error);
       }) {
   // 対応するコントローラクラスを設定する
   setControllerClass(kControllerUID);
@@ -54,6 +63,7 @@ Processor::Processor()
 
 Processor::~Processor() {
   recorder_.Stop();
+  application_input_.Stop();
   direct_wasapi_output_.Stop();
 }
 
@@ -109,7 +119,31 @@ auto PLUGIN_API Processor::setupProcessing(ProcessSetup& setup) -> tresult {
   meter_frames_ = 0;
   meter_input_peak_ = 0.0F;
   meter_output_peak_ = 0.0F;
+  meter_external_output_peak_ = 0.0F;
+  meter_additional_input_peak_ = 0.0F;
   input_meter_buffer_.assign(
+      static_cast<std::size_t>(std::max(0, setup.maxSamplesPerBlock)), 0.0F);
+  mixed_output_left_.assign(
+      static_cast<std::size_t>(std::max(0, setup.maxSamplesPerBlock)), 0.0F);
+  mixed_output_right_.assign(
+      static_cast<std::size_t>(std::max(0, setup.maxSamplesPerBlock)), 0.0F);
+  voice_delay_line_.Prepare(
+      setup.sampleRate, static_cast<std::uint32_t>(common::kMaxBgmDelayMs));
+  bgm_delay_line_.Prepare(
+      setup.sampleRate, static_cast<std::uint32_t>(common::kMaxBgmDelayMs));
+  voice_delay_active_ = false;
+  active_bgm_delay_ms_ = 0;
+  application_input_buffer_.assign(
+      static_cast<std::size_t>(std::max(0, setup.maxSamplesPerBlock)), 0.0F);
+  application_input_right_buffer_.assign(
+      static_cast<std::size_t>(std::max(0, setup.maxSamplesPerBlock)), 0.0F);
+  additional_application_input_buffer_.assign(
+      static_cast<std::size_t>(std::max(0, setup.maxSamplesPerBlock)), 0.0F);
+  additional_application_input_right_buffer_.assign(
+      static_cast<std::size_t>(std::max(0, setup.maxSamplesPerBlock)), 0.0F);
+  delayed_additional_input_buffer_.assign(
+      static_cast<std::size_t>(std::max(0, setup.maxSamplesPerBlock)), 0.0F);
+  delayed_additional_input_right_buffer_.assign(
       static_cast<std::size_t>(std::max(0, setup.maxSamplesPerBlock)), 0.0F);
   if (direct_wasapi_config_.has_value()) {
     direct_wasapi_config_->source_sample_rate = setup.sampleRate;
@@ -120,13 +154,31 @@ auto PLUGIN_API Processor::setupProcessing(ProcessSetup& setup) -> tresult {
 
 auto PLUGIN_API Processor::setActive(const TBool state) -> tresult {
   if (state) {
+    voice_delay_line_.Reset();
+    bgm_delay_line_.Reset();
+    voice_delay_active_ = false;
+    active_bgm_delay_ms_ = 0;
     if (direct_wasapi_config_.has_value() && meter_sample_rate_ > 0.0) {
       direct_wasapi_config_->source_sample_rate = meter_sample_rate_;
       direct_wasapi_output_.Start(*direct_wasapi_config_);
     }
+    if (application_input_enabled_ && !application_input_identity_.empty()) {
+      StartApplicationInput(application_input_, application_input_process_id_,
+                            application_input_identity_);
+    }
+    if (additional_input_enabled_ &&
+        !additional_application_input_identity_.empty()) {
+      StartApplicationInput(additional_application_input_,
+                            additional_application_input_process_id_,
+                            additional_application_input_identity_);
+    }
   } else {
     recorder_.Stop();
     SendRecordingStatusMessage();
+    application_input_.Stop();
+    additional_application_input_.Stop();
+    application_input_process_id_ = 0;
+    additional_application_input_process_id_ = 0;
     direct_wasapi_output_.Stop();
     // メモリの解放など
     std::lock_guard<std::mutex> lock(mtx_);
@@ -135,6 +187,12 @@ auto PLUGIN_API Processor::setActive(const TBool state) -> tresult {
     meter_frames_ = 0;
     meter_input_peak_ = 0.0F;
     meter_output_peak_ = 0.0F;
+    meter_external_output_peak_ = 0.0F;
+    meter_additional_input_peak_ = 0.0F;
+    voice_delay_line_.Reset();
+    bgm_delay_line_.Reset();
+    voice_delay_active_ = false;
+    active_bgm_delay_ms_ = 0;
   }
   return AudioEffect::setActive(state);
 }
@@ -209,7 +267,13 @@ auto PLUGIN_API Processor::process(ProcessData& data) -> tresult {
   }
   unreflected_params_.clear();
 
-  if (data.numInputs == 0 || data.numOutputs == 0 || data.numSamples == 0) {
+  const auto application_input_active =
+      application_input_enabled_ || additional_input_enabled_;
+  const auto host_input_available =
+      data.numInputs > 0 && data.inputs[0].numChannels > 0 &&
+      data.inputs[0].channelBuffers32 != nullptr;
+  if (data.numOutputs == 0 || data.numSamples == 0 ||
+      (!application_input_active && !host_input_available)) {
     // 何もしない
     return kResultOk;
   }
@@ -219,8 +283,9 @@ auto PLUGIN_API Processor::process(ProcessData& data) -> tresult {
     return kResultOk;
   }
 
-  // チャンネル数を確認
-  if (data.inputs[0].numChannels < 1) {
+  // チャンネル数を確認。Application Input はホスト入力を使わないため、
+  // ホストが入力バスを持たない構成でも動作できる。
+  if (!application_input_active && !host_input_available) {
     return kResultOk;
   }
   if (data.outputs[0].numChannels < 1) {
@@ -228,15 +293,57 @@ auto PLUGIN_API Processor::process(ProcessData& data) -> tresult {
   }
 
   // 出力バス 0 のチャンネル 0 に入力をコピー
-  const float* const in0 = data.inputs[0].channelBuffers32[0];
+  auto application_input_silent = true;
+  const auto primary_application_active =
+      input_source_ == common::InputSource::kApplicationInput &&
+      application_input_enabled_;
+  if (primary_application_active) {
+    static_cast<void>(application_input_.Read(
+        application_input_buffer_.data(), application_input_right_buffer_.data(),
+        static_cast<std::size_t>(data.numSamples)));
+    for (auto i = 0; i < data.numSamples; ++i) {
+      application_input_silent =
+          application_input_silent && application_input_buffer_[i] == 0.0F &&
+          application_input_right_buffer_[i] == 0.0F;
+    }
+  }
+  const auto additional_application_active =
+      additional_input_source_ == common::InputSource::kApplicationInput &&
+      additional_input_enabled_;
+  if (additional_application_active) {
+    static_cast<void>(additional_application_input_.Read(
+        additional_application_input_buffer_.data(),
+        additional_application_input_right_buffer_.data(),
+        static_cast<std::size_t>(data.numSamples)));
+    const auto gain = static_cast<float>(std::pow(
+        10.0, recording_additional_input_gain_db_ / 20.0));
+    for (auto i = 0; i < data.numSamples; ++i) {
+      additional_application_input_buffer_[i] *= gain;
+      additional_application_input_right_buffer_[i] *= gain;
+    }
+  }
+  if (!primary_application_active && !host_input_available) {
+    std::fill(input_meter_buffer_.begin(), input_meter_buffer_.end(), 0.0F);
+  }
+  const float* const in0 =
+      primary_application_active
+          ? application_input_buffer_.data()
+          : host_input_available ? data.inputs[0].channelBuffers32[0]
+                                 : input_meter_buffer_.data();
   float* const out0 = data.outputs[0].channelBuffers32[0];
   float* const out1 = data.outputs[0].numChannels >= 2
                           ? data.outputs[0].channelBuffers32[1]
                           : nullptr;
-  const float* const in1 = data.inputs[0].numChannels >= 2
-                               ? data.inputs[0].channelBuffers32[1]
-                               : nullptr;
-  const auto host_input_silent = data.inputs[0].silenceFlags != 0;
+  const float* const in1 =
+      primary_application_active
+          ? application_input_right_buffer_.data()
+          : (host_input_available && data.inputs[0].numChannels >= 2
+                 ? data.inputs[0].channelBuffers32[1]
+                 : nullptr);
+  const auto host_input_silent =
+      primary_application_active
+          ? application_input_silent
+          : !host_input_available || data.inputs[0].silenceFlags != 0;
   const auto process_result = audio_engine_.Process(
       {.input_left = in0,
        .input_right = in1,
@@ -251,12 +358,67 @@ auto PLUGIN_API Processor::process(ProcessData& data) -> tresult {
              << data.outputs[0].numChannels) - 1U
           : 0U;
 
+  // An application capture is already audible from its source application, so
+  // ADD BGM stays out of the host/VST monitor and is added only to the external
+  // output/recorder mix.
   auto block_output_peak = 0.0F;
+  auto block_external_output_peak = 0.0F;
+  const auto additional_bgm_active = additional_application_active;
+  const auto bgm_delay_ms = additional_bgm_active
+                                ? common::ClampBgmDelayMs(
+                                      recording_voice_delay_ms_)
+                                : 0;
+  if (additional_bgm_active != voice_delay_active_ ||
+      bgm_delay_ms != active_bgm_delay_ms_) {
+    voice_delay_line_.Reset();
+    bgm_delay_line_.Reset();
+    voice_delay_active_ = additional_bgm_active;
+    active_bgm_delay_ms_ = bgm_delay_ms;
+  }
+  if (additional_bgm_active && bgm_delay_ms < 0) {
+    voice_delay_line_.ProcessBlock(
+        out0, out1, mixed_output_left_.data(), mixed_output_right_.data(),
+        static_cast<std::size_t>(data.numSamples),
+        common::SignedDelaySamples(meter_sample_rate_, bgm_delay_ms));
+  } else {
+    std::copy_n(out0, data.numSamples, mixed_output_left_.data());
+    std::copy_n(out1 != nullptr ? out1 : out0, data.numSamples,
+                mixed_output_right_.data());
+  }
+  if (additional_bgm_active && bgm_delay_ms > 0) {
+    bgm_delay_line_.ProcessBlock(
+        additional_application_input_buffer_.data(),
+        additional_application_input_right_buffer_.data(),
+        delayed_additional_input_buffer_.data(),
+        delayed_additional_input_right_buffer_.data(),
+        static_cast<std::size_t>(data.numSamples),
+        common::SignedDelaySamples(meter_sample_rate_, bgm_delay_ms));
+  } else {
+    std::copy_n(additional_application_input_buffer_.data(), data.numSamples,
+                delayed_additional_input_buffer_.data());
+    std::copy_n(additional_application_input_right_buffer_.data(),
+                data.numSamples, delayed_additional_input_right_buffer_.data());
+  }
   for (auto i = 0; i < data.numSamples; ++i) {
-    block_output_peak = std::max(block_output_peak, std::abs(out0[i]));
-    if (out1 != nullptr) {
-      block_output_peak = std::max(block_output_peak, std::abs(out1[i]));
+    const auto voice_left = out0[i];
+    const auto voice_right = out1 != nullptr ? out1[i] : out0[i];
+    // Keep the left GAIN meter voice-only; ADD BGM is external-only.
+    block_output_peak = std::max(block_output_peak, std::abs(voice_left));
+    block_output_peak = std::max(block_output_peak, std::abs(voice_right));
+
+    if (additional_application_active) {
+      mixed_output_left_[i] = std::clamp(
+          mixed_output_left_[i] + delayed_additional_input_buffer_[i],
+          -1.0F, 1.0F);
+      mixed_output_right_[i] = std::clamp(
+          mixed_output_right_[i] +
+              delayed_additional_input_right_buffer_[i],
+          -1.0F, 1.0F);
     }
+    block_external_output_peak = std::max(
+        block_external_output_peak, std::abs(mixed_output_left_[i]));
+    block_external_output_peak = std::max(
+        block_external_output_peak, std::abs(mixed_output_right_[i]));
   }
   auto block_input_peak = 0.0F;
   if (!host_input_silent &&
@@ -268,14 +430,28 @@ auto PLUGIN_API Processor::process(ProcessData& data) -> tresult {
   }
   meter_input_peak_ = std::max(meter_input_peak_, block_input_peak);
   meter_output_peak_ = std::max(meter_output_peak_, block_output_peak);
-  // The optional WASAPI path receives a copy of the processed signal. Host
-  // output buffers remain untouched and continue to be the normal VST output.
+  meter_external_output_peak_ = std::max(meter_external_output_peak_,
+                                          block_external_output_peak);
+  auto block_additional_input_peak = 0.0F;
+  if (additional_application_active) {
+    for (auto i = 0; i < data.numSamples; ++i) {
+      block_additional_input_peak = std::max(
+          block_additional_input_peak,
+          std::max(std::abs(additional_application_input_buffer_[i]),
+                   std::abs(additional_application_input_right_buffer_[i])));
+    }
+  }
+  meter_additional_input_peak_ =
+      std::max(meter_additional_input_peak_, block_additional_input_peak);
+  // The optional WASAPI path receives the post-mix signal. Host output buffers
+  // remain untouched and continue to be the normal VST voice-only output.
   direct_wasapi_output_.PushBlock(
-      out0, out1, static_cast<std::size_t>(data.numSamples));
+      mixed_output_left_.data(), mixed_output_right_.data(),
+      static_cast<std::size_t>(data.numSamples));
   if (recorder_.IsRecording()) {
     for (auto i = 0; i < data.numSamples; ++i) {
-      recorder_.Push(input_meter_buffer_[i], out0[i],
-                     out1 != nullptr ? out1[i] : out0[i]);
+      recorder_.Push(input_meter_buffer_[i], mixed_output_left_[i],
+                     mixed_output_right_[i], 0.0F, 0.0F);
     }
   }
   meter_frames_ += data.numSamples;
@@ -287,6 +463,8 @@ auto PLUGIN_API Processor::process(ProcessData& data) -> tresult {
     meter_frames_ = 0;
     meter_input_peak_ = 0.0F;
     meter_output_peak_ = 0.0F;
+    meter_external_output_peak_ = 0.0F;
+    meter_additional_input_peak_ = 0.0F;
   }
 
   return kResultOk;
@@ -323,6 +501,18 @@ void Processor::SendAudioLevelMessage() {
       static_cast<void>(attributes->setFloat("input_peak", meter_input_peak_));
       static_cast<void>(
           attributes->setFloat("output_peak", meter_output_peak_));
+      static_cast<void>(attributes->setFloat(
+          "external_output_peak", meter_external_output_peak_));
+      static_cast<void>(attributes->setFloat(
+          "additional_input_peak", meter_additional_input_peak_));
+      static_cast<void>(attributes->setFloat("input_file_position",
+                                             0.0F));
+      static_cast<void>(attributes->setFloat("input_file_length",
+                                             0.0F));
+      static_cast<void>(attributes->setFloat(
+          "additional_file_position", 0.0F));
+      static_cast<void>(attributes->setFloat(
+          "additional_file_length", 0.0F));
       static_cast<void>(sendMessage(message));
     }
   }
@@ -343,6 +533,48 @@ void Processor::SendDirectWasapiStatusMessage(
       static_cast<void>(sendMessage(message));
     }
   }
+}
+
+void Processor::SendApplicationInputStatusMessage(
+    const common::ApplicationInputStatus status, const std::string& error) {
+  if (const auto message = Steinberg::owned(allocateMessage())) {
+    message->setMessageID("application_input_status");
+    if (auto* const attributes = message->getAttributes();
+        attributes != nullptr) {
+      static_cast<void>(attributes->setInt(
+          "status", static_cast<Steinberg::int64>(status)));
+      if (!error.empty()) {
+        static_cast<void>(attributes->setBinary(
+            "error", error.data(),
+            static_cast<Steinberg::uint32>(error.size())));
+      }
+      static_cast<void>(sendMessage(message));
+    }
+  }
+}
+
+auto Processor::StartApplicationInput(
+    common::ApplicationInput& capture, std::uint32_t& process_id,
+    const std::string& identity) -> bool {
+  capture.Stop();
+  process_id = 0;
+  const auto snapshot = common::EnumerateApplicationInputs(
+      common::CurrentApplicationInputExclusions());
+  const auto application = common::FindApplicationInput(snapshot, identity);
+  if (!application.has_value()) {
+    SendApplicationInputStatusMessage(
+        common::ApplicationInputStatus::kUnavailable,
+        snapshot.error.empty()
+            ? "The selected application is not producing audio."
+            : snapshot.error);
+    return false;
+  }
+  if (meter_sample_rate_ <= 0.0 ||
+      !capture.Start(application->process_id, meter_sample_rate_)) {
+    return false;
+  }
+  process_id = application->process_id;
+  return true;
 }
 
 // プロジェクトやプリセットをロードした時に呼ばれる。
@@ -373,16 +605,47 @@ auto PLUGIN_API Processor::setState(IBStream* const state) -> tresult {
   // なるべくそのまま保持する。
   [[maybe_unused]] const auto error_code =
       audio_engine_.ReadState(iss);
-    recording_mode_ = ui_state.recording_mode;
+    recording_mode_ = common::NormalizeRecordingMode(ui_state.recording_mode);
     recording_path_ = ui_state.recording_path;
+    recording_voice_delay_ms_ =
+        common::ClampBgmDelayMs(ui_state.voice_delay_ms);
+    recording_additional_input_gain_db_ = std::clamp(
+        ui_state.additional_input_gain_db,
+        common::kMinAdditionalInputGainDb,
+        common::kMaxAdditionalInputGainDb);
+    // Audio Files remains decodable only as a legacy state value.  It is not
+    // exposed by either host anymore, so migrate old projects before any
+    // runtime input is configured.
+    input_source_ = ui_state.input_source == common::InputSource::kAudioFile
+                        ? common::InputSource::kDawInput
+                        : ui_state.input_source;
+    additional_input_source_ =
+        ui_state.additional_input_source == common::InputSource::kAudioFile
+            ? common::InputSource::kOff
+            : ui_state.additional_input_source;
+    application_input_identity_ = ui_state.application_input_identity;
+    additional_application_input_identity_ =
+        ui_state.additional_application_input_identity;
+    input_file_path_.clear();
+    additional_input_file_path_.clear();
+    input_file_playing_ = false;
+    input_file_loop_ = false;
+    additional_file_playing_ = false;
+    additional_file_loop_ = false;
+    input_file_volume_ = ui_state.input_file_volume;
+    additional_file_volume_ = ui_state.additional_file_volume;
+    application_input_enabled_ =
+        input_source_ == common::InputSource::kApplicationInput &&
+        !application_input_identity_.empty();
+    additional_input_enabled_ =
+        additional_input_source_ == common::InputSource::kApplicationInput &&
+        !additional_application_input_identity_.empty();
     direct_wasapi_config_.reset();
     if (ui_state.direct_wasapi_enabled &&
         !ui_state.direct_wasapi_device_id.empty()) {
       DirectWasapiConfig config;
       config.device_id = ui_state.direct_wasapi_device_id;
-      config.mode = ui_state.direct_wasapi_exclusive
-                        ? DirectWasapiMode::kExclusive
-                        : DirectWasapiMode::kShared;
+      config.mode = DirectWasapiMode::kShared;
       config.source_sample_rate = meter_sample_rate_;
       direct_wasapi_config_ = config;
       restored_direct_wasapi = config;
@@ -399,6 +662,10 @@ auto PLUGIN_API Processor::setState(IBStream* const state) -> tresult {
   } else {
     direct_wasapi_output_.Stop();
   }
+  application_input_.Stop();
+  additional_application_input_.Stop();
+  application_input_process_id_ = 0;
+  additional_application_input_process_id_ = 0;
   return kResultTrue;
 }
 
@@ -415,12 +682,31 @@ auto PLUGIN_API Processor::getState(IBStream* const state) -> tresult {
     if (direct_wasapi_config_.has_value() &&
         !direct_wasapi_config_->device_id.empty()) {
       ui_state.direct_wasapi_enabled = true;
-      ui_state.direct_wasapi_exclusive =
-          direct_wasapi_config_->mode == DirectWasapiMode::kExclusive;
+      ui_state.direct_wasapi_exclusive = false;
       ui_state.direct_wasapi_device_id = direct_wasapi_config_->device_id;
     }
-    ui_state.recording_mode = recording_mode_;
+    ui_state.recording_mode =
+        common::NormalizeRecordingMode(recording_mode_);
     ui_state.recording_path = recording_path_;
+    ui_state.voice_delay_ms = recording_voice_delay_ms_;
+    ui_state.additional_input_gain_db = recording_additional_input_gain_db_;
+    ui_state.application_input_enabled = application_input_enabled_ &&
+                                         !application_input_identity_.empty();
+    ui_state.additional_input_enabled = additional_input_enabled_ &&
+                                        !additional_application_input_identity_.empty();
+    ui_state.application_input_identity = application_input_identity_;
+    ui_state.additional_application_input_identity =
+        additional_application_input_identity_;
+    ui_state.input_source = input_source_ == common::InputSource::kAudioFile
+                                ? common::InputSource::kDawInput
+                                : input_source_;
+    ui_state.additional_input_source =
+        additional_input_source_ == common::InputSource::kAudioFile
+            ? common::InputSource::kOff
+            : additional_input_source_;
+    // File-player state is deliberately not written back.  Keeping the
+    // fields in the wire format preserves compatibility with old projects,
+    // while newly saved state cannot resurrect the removed feature.
   }
 
   auto state_string = EncodePluginState(parameter_state, ui_state);
@@ -451,6 +737,8 @@ auto PLUGIN_API Processor::notify(IMessage* const message) -> tresult {
       return kResultFalse;
     }
     Steinberg::int64 mode_value = 0;
+    Steinberg::int64 voice_delay_ms_value =
+        static_cast<Steinberg::int64>(common::kMinBgmDelayMs) - 1;
     Steinberg::uint32 path_size = 0;
     const void* path_data = nullptr;
     if (attributes->getInt("mode", mode_value) != kResultTrue ||
@@ -460,13 +748,30 @@ auto PLUGIN_API Processor::notify(IMessage* const message) -> tresult {
         mode_value > 3) {
       return kResultFalse;
     }
+    if (attributes->getInt("voice_delay_ms", voice_delay_ms_value) !=
+            kResultTrue ||
+        voice_delay_ms_value <
+            static_cast<Steinberg::int64>(common::kMinBgmDelayMs) ||
+        voice_delay_ms_value >
+            static_cast<Steinberg::int64>(common::kMaxBgmDelayMs)) {
+      voice_delay_ms_value =
+          static_cast<Steinberg::int64>(common::kMinBgmDelayMs) - 1;
+    }
+    double requested_gain_db = common::kDefaultAdditionalInputGainDb;
+    const auto has_valid_gain =
+        attributes->getFloat("additional_input_gain_db", requested_gain_db) ==
+            kResultTrue &&
+        std::isfinite(requested_gain_db) &&
+        requested_gain_db >= common::kMinAdditionalInputGainDb &&
+        requested_gain_db <= common::kMaxAdditionalInputGainDb;
     auto sample_rate = 0.0;
     {
       std::lock_guard<std::mutex> lock(mtx_);
       sample_rate = meter_sample_rate_;
     }
     common::RecordingSettings settings;
-    settings.mode = static_cast<common::RecordingMode>(mode_value);
+    settings.mode = common::NormalizeRecordingMode(
+        static_cast<common::RecordingMode>(mode_value));
     const auto* const path_begin = static_cast<const char*>(path_data);
     const auto path_utf8 = std::u8string(
         reinterpret_cast<const char8_t*>(path_begin),
@@ -475,8 +780,25 @@ auto PLUGIN_API Processor::notify(IMessage* const message) -> tresult {
     settings.sample_rate = sample_rate;
     {
       std::lock_guard<std::mutex> lock(mtx_);
-      recording_mode_ = settings.mode;
+      recording_mode_ = common::NormalizeRecordingMode(settings.mode);
       recording_path_ = settings.base_path;
+      if (voice_delay_ms_value >=
+              static_cast<Steinberg::int64>(common::kMinBgmDelayMs) &&
+          voice_delay_ms_value <=
+              static_cast<Steinberg::int64>(common::kMaxBgmDelayMs)) {
+        recording_voice_delay_ms_ = common::ClampBgmDelayMs(
+            static_cast<std::int32_t>(voice_delay_ms_value));
+      }
+      if (!has_valid_gain) {
+        requested_gain_db = recording_additional_input_gain_db_;
+      }
+      recording_additional_input_gain_db_ = requested_gain_db;
+      // ADD BGM is mixed into the final block before the recorder receives
+      // it. Keep the legacy recorder-side mix/delay disabled so neither
+      // control is applied twice.
+      settings.additional_input_enabled = false;
+      settings.additional_input_gain_db = recording_additional_input_gain_db_;
+      settings.voice_delay_ms = 0;
     }
     if (!recorder_.Start(settings)) {
       SendRecordingStatusMessage();
@@ -491,9 +813,33 @@ auto PLUGIN_API Processor::notify(IMessage* const message) -> tresult {
       return kResultFalse;
     }
     Steinberg::int64 mode_value = 0;
+    Steinberg::int64 voice_delay_ms_value =
+        static_cast<Steinberg::int64>(common::kMinBgmDelayMs) - 1;
+    double additional_input_gain_db_value =
+        common::kDefaultAdditionalInputGainDb;
     if (attributes->getInt("mode", mode_value) != kResultTrue ||
         mode_value < 0 || mode_value > 3) {
       return kResultFalse;
+    }
+    if (attributes->getInt("voice_delay_ms", voice_delay_ms_value) ==
+            kResultTrue &&
+        voice_delay_ms_value >=
+            static_cast<Steinberg::int64>(common::kMinBgmDelayMs) &&
+        voice_delay_ms_value <=
+            static_cast<Steinberg::int64>(common::kMaxBgmDelayMs)) {
+      std::lock_guard<std::mutex> lock(mtx_);
+      recording_voice_delay_ms_ = static_cast<std::int32_t>(
+          voice_delay_ms_value);
+    }
+    if (attributes->getFloat("additional_input_gain_db",
+                             additional_input_gain_db_value) == kResultTrue &&
+        std::isfinite(additional_input_gain_db_value) &&
+        additional_input_gain_db_value >=
+            common::kMinAdditionalInputGainDb &&
+        additional_input_gain_db_value <=
+            common::kMaxAdditionalInputGainDb) {
+      std::lock_guard<std::mutex> lock(mtx_);
+      recording_additional_input_gain_db_ = additional_input_gain_db_value;
     }
     auto path = std::filesystem::path{};
     Steinberg::uint32 path_size = 0;
@@ -510,9 +856,11 @@ auto PLUGIN_API Processor::notify(IMessage* const message) -> tresult {
           reinterpret_cast<const char8_t*>(path_begin + path_size));
       path = std::filesystem::path(path_utf8);
     }
+    const auto requested_mode = common::NormalizeRecordingMode(
+        static_cast<common::RecordingMode>(mode_value));
     {
       std::lock_guard<std::mutex> lock(mtx_);
-      recording_mode_ = static_cast<common::RecordingMode>(mode_value);
+      recording_mode_ = requested_mode;
       recording_path_ = std::move(path);
     }
     return kResultTrue;
@@ -540,8 +888,8 @@ auto PLUGIN_API Processor::notify(IMessage* const message) -> tresult {
     }
     DirectWasapiConfig config;
     config.device_id.assign(static_cast<const char*>(data), size);
-    config.mode = exclusive != 0 ? DirectWasapiMode::kExclusive
-                                 : DirectWasapiMode::kShared;
+    static_cast<void>(exclusive);
+    config.mode = DirectWasapiMode::kShared;
     {
       std::lock_guard<std::mutex> lock(mtx_);
       config.source_sample_rate = meter_sample_rate_;
@@ -554,6 +902,197 @@ auto PLUGIN_API Processor::notify(IMessage* const message) -> tresult {
       return kResultTrue;
     }
     direct_wasapi_output_.Start(config);
+    return kResultTrue;
+  }
+  if (std::strcmp(message_id, "application_input_off") == 0) {
+    {
+      std::lock_guard<std::mutex> lock(mtx_);
+      application_input_enabled_ = false;
+      application_input_identity_.clear();
+      application_input_process_id_ = 0;
+      input_source_ = common::InputSource::kDawInput;
+    }
+    application_input_.Stop();
+    return kResultTrue;
+  }
+  if (std::strcmp(message_id, "application_input_main_off") == 0) {
+    {
+      std::lock_guard<std::mutex> lock(mtx_);
+      application_input_enabled_ = false;
+      input_source_ = common::InputSource::kDawInput;
+    }
+    return kResultTrue;
+  }
+  if (std::strcmp(message_id, "application_input_clear") == 0) {
+    {
+      std::lock_guard<std::mutex> lock(mtx_);
+      application_input_enabled_ = false;
+      application_input_identity_.clear();
+      application_input_process_id_ = 0;
+      input_source_ = common::InputSource::kDawInput;
+    }
+    application_input_.Stop();
+    return kResultTrue;
+  }
+  if (std::strcmp(message_id, "additional_input_off") == 0) {
+    {
+      std::lock_guard<std::mutex> lock(mtx_);
+      additional_input_enabled_ = false;
+      additional_application_input_identity_.clear();
+      additional_application_input_process_id_ = 0;
+      additional_input_source_ = common::InputSource::kOff;
+    }
+    additional_application_input_.Stop();
+    return kResultTrue;
+  }
+  if (std::strcmp(message_id, "application_input_config") == 0) {
+    auto* const attributes = message->getAttributes();
+    if (attributes == nullptr) {
+      return kResultFalse;
+    }
+    uint32 size = 0;
+    const void* data = nullptr;
+    if (attributes->getBinary("identity", data, size) != kResultTrue ||
+        data == nullptr || size == 0) {
+      return kResultFalse;
+    }
+    auto identity = std::string(static_cast<const char*>(data), size);
+    {
+      std::lock_guard<std::mutex> lock(mtx_);
+      application_input_enabled_ = true;
+      application_input_identity_ = identity;
+      input_source_ = common::InputSource::kApplicationInput;
+    }
+    // Resolve the current PID from the identity again inside the processor.
+    // The editor's menu can outlive an audio-session refresh, and a host may
+    // have restarted the selected application in the meantime.
+    if (meter_sample_rate_ <= 0.0 ||
+        !StartApplicationInput(application_input_, application_input_process_id_,
+                               identity)) {
+      return kResultTrue;
+    }
+    return kResultTrue;
+  }
+  if (std::strcmp(message_id, "additional_input_config") == 0) {
+    auto* const attributes = message->getAttributes();
+    if (attributes == nullptr) {
+      return kResultFalse;
+    }
+    uint32 size = 0;
+    const void* data = nullptr;
+    Steinberg::int64 enabled = 0;
+    if (attributes->getBinary("identity", data, size) != kResultTrue ||
+        data == nullptr || size == 0 ||
+        attributes->getInt("enabled", enabled) != kResultTrue) {
+      return kResultFalse;
+    }
+    auto identity = std::string(static_cast<const char*>(data), size);
+    {
+      std::lock_guard<std::mutex> lock(mtx_);
+      additional_application_input_identity_ = identity;
+      additional_input_enabled_ = enabled != 0;
+      additional_input_source_ = enabled != 0
+                                     ? common::InputSource::kApplicationInput
+                                     : common::InputSource::kOff;
+    }
+    if (additional_input_enabled_ && meter_sample_rate_ > 0.0) {
+      static_cast<void>(StartApplicationInput(
+          additional_application_input_, additional_application_input_process_id_,
+          identity));
+    }
+    return kResultTrue;
+  }
+  if (std::strcmp(message_id, "input_file_volume") == 0 ||
+      std::strcmp(message_id, "additional_file_volume") == 0) {
+    const auto additional =
+        std::strcmp(message_id, "additional_file_volume") == 0;
+    auto* const attributes = message->getAttributes();
+    if (attributes == nullptr) {
+      return kResultFalse;
+    }
+    double volume = 1.0;
+    if (attributes->getFloat("volume", volume) != kResultTrue ||
+        !std::isfinite(volume)) {
+      return kResultFalse;
+    }
+    volume = std::clamp(volume, 0.0, 1.0);
+    // This is intentionally lock-free: the editor sends this message for
+    // every pointer movement, and taking the processing mutex here could make
+    // the realtime callback return a silent block.
+    if (additional) {
+      additional_file_volume_.store(volume, std::memory_order_relaxed);
+    } else {
+      input_file_volume_.store(volume, std::memory_order_relaxed);
+    }
+    return kResultTrue;
+  }
+  if (std::strcmp(message_id, "input_source_config") == 0 ||
+      std::strcmp(message_id, "additional_input_source_config") == 0) {
+    const auto additional =
+        std::strcmp(message_id, "additional_input_source_config") == 0;
+    auto* const attributes = message->getAttributes();
+    if (attributes == nullptr) return kResultFalse;
+    Steinberg::int64 source_value = 0;
+    if (attributes->getInt("source", source_value) != kResultTrue ||
+        source_value < 0 || source_value > 3) return kResultFalse;
+    const auto requested_source =
+        static_cast<common::InputSource>(source_value);
+    const auto source =
+        requested_source == common::InputSource::kAudioFile
+            ? (additional ? common::InputSource::kOff
+                          : common::InputSource::kDawInput)
+            : requested_source;
+    auto previous_source = common::InputSource::kDawInput;
+    {
+      std::lock_guard<std::mutex> lock(mtx_);
+      if (additional) {
+        previous_source = additional_input_source_;
+        additional_input_source_ = source;
+        additional_input_file_path_.clear();
+        additional_file_playing_ = false;
+        additional_file_loop_ = false;
+        additional_file_volume_.store(1.0, std::memory_order_relaxed);
+        additional_input_enabled_ =
+            source == common::InputSource::kApplicationInput &&
+            !additional_application_input_identity_.empty();
+      } else {
+        previous_source = input_source_;
+        input_source_ = source;
+        input_file_path_.clear();
+        input_file_playing_ = false;
+        input_file_loop_ = false;
+        input_file_volume_.store(1.0, std::memory_order_relaxed);
+        application_input_enabled_ =
+            source == common::InputSource::kApplicationInput &&
+            !application_input_identity_.empty();
+      }
+    }
+    if (additional) {
+      if (previous_source == common::InputSource::kApplicationInput &&
+          source != common::InputSource::kApplicationInput) {
+        additional_application_input_.Stop();
+      }
+    } else {
+      if (previous_source == common::InputSource::kApplicationInput &&
+          source != common::InputSource::kApplicationInput) {
+        application_input_.Stop();
+      }
+    }
+    if (source == common::InputSource::kApplicationInput) {
+      auto identity = std::string{};
+      if (additional) {
+        identity = additional_application_input_identity_;
+      } else {
+        identity = application_input_identity_;
+      }
+      if (!identity.empty() && meter_sample_rate_ > 0.0) {
+        static_cast<void>(StartApplicationInput(
+            additional ? additional_application_input_ : application_input_,
+            additional ? additional_application_input_process_id_
+                       : application_input_process_id_,
+            identity));
+      }
+    }
     return kResultTrue;
   }
   if (std::strcmp(message_id, "param_change") == 0) {

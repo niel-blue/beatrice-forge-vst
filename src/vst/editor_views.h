@@ -492,6 +492,177 @@ class GlowingActionLabel final : public ActionLabel {
   CFontRef bold_font_ = nullptr;
 };
 
+// Audio-file players are shared by the standalone shell and the VST editor.
+// They deliberately remain view-only controls: transport state and decoding
+// live in the owning audio engine, while these views provide the compact,
+// seekable presentation used in both hosts.
+class FileProgressView final : public CView {
+ public:
+  FileProgressView(const CRect& rect, std::function<double()> get_progress,
+                  std::function<void(double)> seek)
+      : CView(rect), get_progress_(std::move(get_progress)),
+        seek_(std::move(seek)) {}
+  void SetEnabled(const bool enabled) {
+    enabled_ = enabled;
+    setMouseEnabled(enabled);
+    invalid();
+  }
+  void draw(CDrawContext* const context) override {
+    auto rect = getViewSize();
+    context->setDrawMode(kAntiAliasing);
+    context->setFillColor(theme::kPanelBorder);
+    context->drawRect(rect, kDrawFilled);
+    rect.inset(1.0, 1.0);
+    context->setFillColor(enabled_ ? theme::kSliderTrackInactive
+                                   : theme::kSliderDisabled);
+    context->drawRect(rect, kDrawFilled);
+    const auto progress = enabled_ && get_progress_
+                              ? std::clamp(get_progress_(), 0.0, 1.0)
+                              : 0.0;
+    auto active = rect;
+    active.right = active.left + active.getWidth() * progress;
+    context->setFillColor(enabled_ ? theme::kSliderTrackActive
+                                   : theme::kSliderDisabled);
+    context->drawRect(active, kDrawFilled);
+    if (enabled_) {
+      const auto center = CPoint(rect.left + rect.getWidth() * progress,
+                                 rect.getCenter().y);
+      context->setFillColor(theme::kSliderHandle);
+      context->drawEllipse(
+          CRect(center.x - layout::kStandalonePlayerHandleRadius,
+                center.y - layout::kStandalonePlayerHandleRadius,
+                center.x + layout::kStandalonePlayerHandleRadius,
+                center.y + layout::kStandalonePlayerHandleRadius),
+          kDrawFilled);
+    }
+    setDirty(false);
+  }
+  auto onMouseDown(CPoint& where, const CButtonState& buttons)
+      -> CMouseEventResult override {
+    if (!enabled_ || !buttons.isLeftButton()) return CView::onMouseDown(where, buttons);
+    dragging_ = true;
+    Seek(where);
+    return VSTGUI::kMouseEventHandled;
+  }
+  auto onMouseMoved(CPoint& where, const CButtonState& buttons)
+      -> CMouseEventResult override {
+    if (dragging_ && buttons.isLeftButton()) { Seek(where); return VSTGUI::kMouseEventHandled; }
+    return CView::onMouseMoved(where, buttons);
+  }
+  auto onMouseUp(CPoint& where, const CButtonState& buttons)
+      -> CMouseEventResult override {
+    if (dragging_) { dragging_ = false; Seek(where); return VSTGUI::kMouseEventHandled; }
+    return CView::onMouseUp(where, buttons);
+  }
+ private:
+  void Seek(const CPoint& where) {
+    if (!seek_) return;
+    const auto rect = getViewSize();
+    seek_(std::clamp((where.x - rect.left) / rect.getWidth(), 0.0, 1.0));
+    invalid();
+  }
+  std::function<double()> get_progress_;
+  std::function<void(double)> seek_;
+  bool enabled_ = false;
+  bool dragging_ = false;
+};
+
+class FileVolumeView final : public CView {
+ public:
+  FileVolumeView(const CRect& rect, std::function<double()> get_volume,
+                 std::function<void(double)> set_volume,
+                 const bool enable_fine_drag = false)
+      : CView(rect), get_volume_(std::move(get_volume)),
+        set_volume_(std::move(set_volume)), enable_fine_drag_(enable_fine_drag) {}
+  void SetEnabled(const bool enabled) {
+    enabled_ = enabled;
+    setMouseEnabled(enabled);
+    invalid();
+  }
+  void draw(CDrawContext* const context) override {
+    auto rect = getViewSize();
+    context->setDrawMode(kAntiAliasing);
+    context->setFillColor(theme::kSliderFrame);
+    context->drawRect(rect, kDrawFilled);
+    rect.inset(1.0, 1.0);
+    context->setFillColor(enabled_ ? theme::kMenuFill : theme::kSliderDisabled);
+    context->drawRect(rect, kDrawFilled);
+    const auto volume = enabled_ && get_volume_
+                            ? std::clamp(get_volume_(), 0.0, 1.0)
+                            : 0.0;
+    auto active = rect;
+    active.right = active.left + active.getWidth() * volume;
+    context->setFillColor(enabled_ ? theme::kSliderTrackActive
+                                   : theme::kSliderDisabled);
+    context->drawRect(active, kDrawFilled);
+    if (enabled_) {
+      const auto center = CPoint(rect.left + rect.getWidth() * volume,
+                                 rect.getCenter().y);
+      context->setFillColor(theme::kSliderHandle);
+      context->drawEllipse(
+          CRect(center.x - layout::kStandalonePlayerHandleRadius,
+                center.y - layout::kStandalonePlayerHandleRadius,
+                center.x + layout::kStandalonePlayerHandleRadius,
+                center.y + layout::kStandalonePlayerHandleRadius),
+          kDrawFilled);
+    }
+    setDirty(false);
+  }
+  auto onMouseDown(CPoint& where, const CButtonState& buttons)
+      -> CMouseEventResult override {
+    if (!enabled_ || !buttons.isLeftButton()) return CView::onMouseDown(where, buttons);
+    dragging_ = true;
+    fine_dragging_ = enable_fine_drag_ && buttons.isShiftSet();
+    drag_start_x_ = where.x;
+    drag_start_value_ = get_volume_ ? std::clamp(get_volume_(), 0.0, 1.0) : 0.0;
+    if (!fine_dragging_) SetVolume(where);
+    return VSTGUI::kMouseEventHandled;
+  }
+  auto onMouseMoved(CPoint& where, const CButtonState& buttons)
+      -> CMouseEventResult override {
+    if (dragging_ && buttons.isLeftButton()) {
+      if (fine_dragging_ || (enable_fine_drag_ && buttons.isShiftSet())) {
+        fine_dragging_ = true; SetFineVolume(where);
+      } else SetVolume(where);
+      return VSTGUI::kMouseEventHandled;
+    }
+    return CView::onMouseMoved(where, buttons);
+  }
+  auto onMouseUp(CPoint& where, const CButtonState& buttons)
+      -> CMouseEventResult override {
+    if (dragging_) {
+      dragging_ = false;
+      if (fine_dragging_) SetFineVolume(where); else SetVolume(where);
+      fine_dragging_ = false;
+      return VSTGUI::kMouseEventHandled;
+    }
+    return CView::onMouseUp(where, buttons);
+  }
+ private:
+  void SetVolume(const CPoint& where) {
+    if (!set_volume_) return;
+    const auto rect = getViewSize();
+    set_volume_(std::clamp((where.x - rect.left) / rect.getWidth(), 0.0, 1.0));
+    invalid();
+  }
+  void SetFineVolume(const CPoint& where) {
+    if (!set_volume_) return;
+    const auto rect = getViewSize();
+    set_volume_(std::clamp(drag_start_value_ +
+                               (where.x - drag_start_x_) / rect.getWidth() * 0.1,
+                           0.0, 1.0));
+    invalid();
+  }
+  std::function<double()> get_volume_;
+  std::function<void(double)> set_volume_;
+  bool enabled_ = false;
+  bool dragging_ = false;
+  bool enable_fine_drag_ = false;
+  bool fine_dragging_ = false;
+  double drag_start_x_ = 0.0;
+  double drag_start_value_ = 0.0;
+};
+
 class VoiceMenuItemView final : public CView {
  public:
   VoiceMenuItemView(const CRect& rect, std::string label,
