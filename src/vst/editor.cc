@@ -1335,14 +1335,14 @@ auto Editor::BuildFrame(void* const parent, const bool attach_to_platform,
              layout::SettingsSliderRect(0));
   add_slider(reverb_panel, static_cast<ParamID>(ParameterID::kReverbDecay),
              layout::SettingsSliderRect(1));
-  add_slider(reverb_panel, static_cast<ParamID>(ParameterID::kReverbTone),
+  add_slider(reverb_panel, static_cast<ParamID>(ParameterID::kReverbWidth),
              layout::SettingsSliderRect(2));
   add_action(reverb_panel, layout::ResetButtonRect(), "RESET",
              [reset_parameters]() {
                 reset_parameters({
                     static_cast<ParamID>(ParameterID::kReverbMix),
                     static_cast<ParamID>(ParameterID::kReverbDecay),
-                    static_cast<ParamID>(ParameterID::kReverbTone),
+                    static_cast<ParamID>(ParameterID::kReverbWidth),
                 });
               }, theme::ActionRole::kAction);
 
@@ -3590,7 +3590,7 @@ void Editor::AddCurrentPreset() {
        .presence = get_double(ParameterID::kPresence),
        .reverb_mix = get_double(ParameterID::kReverbMix),
        .reverb_decay = get_double(ParameterID::kReverbDecay),
-       .reverb_tone = get_double(ParameterID::kReverbTone),
+       .reverb_width = get_double(ParameterID::kReverbWidth),
        .pitch_shift = get_double(ParameterID::kPitchShift),
       .formant_shift = get_double(ParameterID::kFormantShift),
       .vq_neighbor_count = static_cast<int>(
@@ -3645,7 +3645,7 @@ void Editor::CreateNewPreset(const bool reset_state) {
        .presence = number_default(ParameterID::kPresence),
        .reverb_mix = number_default(ParameterID::kReverbMix),
        .reverb_decay = number_default(ParameterID::kReverbDecay),
-       .reverb_tone = number_default(ParameterID::kReverbTone),
+       .reverb_width = number_default(ParameterID::kReverbWidth),
        .pitch_shift = number_default(ParameterID::kPitchShift),
       .formant_shift = number_default(ParameterID::kFormantShift),
       .vq_neighbor_count = static_cast<int>(
@@ -3711,7 +3711,7 @@ void Editor::CreateNewPreset(const bool reset_state) {
             ParameterID::kPresence,
             ParameterID::kReverbMix,
             ParameterID::kReverbDecay,
-            ParameterID::kReverbTone,
+            ParameterID::kReverbWidth,
             ParameterID::kFormantShift,
            ParameterID::kVQNumNeighbors,
            ParameterID::kAverageSourcePitch,
@@ -3840,8 +3840,8 @@ void Editor::ApplyPreset(const int index) {
               static_cast<float>(preset.reverb_mix));
   set_control(ParameterID::kReverbDecay,
               static_cast<float>(preset.reverb_decay));
-  set_control(ParameterID::kReverbTone,
-              static_cast<float>(preset.reverb_tone));
+  set_control(ParameterID::kReverbWidth,
+              static_cast<float>(preset.reverb_width));
   set_control(ParameterID::kPitchShift,
               static_cast<float>(preset.pitch_shift));
   set_control(ParameterID::kFormantShift,
@@ -4272,7 +4272,7 @@ void Editor::UpdateSelectedPresetFromCurrentState(
     case ParameterID::kPresence:
     case ParameterID::kReverbMix:
     case ParameterID::kReverbDecay:
-    case ParameterID::kReverbTone:
+    case ParameterID::kReverbWidth:
     case ParameterID::kPitchShift:
     case ParameterID::kFormantShift:
     case ParameterID::kVQNumNeighbors:
@@ -4304,7 +4304,7 @@ void Editor::UpdateSelectedPresetFromCurrentState(
   preset.presence = value(ParameterID::kPresence);
   preset.reverb_mix = value(ParameterID::kReverbMix);
   preset.reverb_decay = value(ParameterID::kReverbDecay);
-  preset.reverb_tone = value(ParameterID::kReverbTone);
+  preset.reverb_width = value(ParameterID::kReverbWidth);
   preset.pitch_shift = value(ParameterID::kPitchShift);
   preset.formant_shift = value(ParameterID::kFormantShift);
   preset.vq_neighbor_count =

@@ -76,9 +76,11 @@ auto PLUGIN_API Processor::initialize(FUnknown* const context) -> tresult {
     return kResultFalse;
   }
 
-  // In/Out バスの生成
+  // Voice conversion itself is mono, but post-conversion effects can produce
+  // stereo ambience.  Keep the input mono and expose a stereo output so the
+  // host does not collapse that ambience back to mono.
   addAudioInput(STR16("AudioInput"), SpeakerArr::kMono);
-  addAudioOutput(STR16("AudioOutput"), SpeakerArr::kMono);
+  addAudioOutput(STR16("AudioOutput"), SpeakerArr::kStereo);
 
   return kResultTrue;
 }
@@ -91,14 +93,23 @@ auto PLUGIN_API Processor::setBusArrangements(SpeakerArrangement* const inputs,
                                               const int32 numIns,
                                               SpeakerArrangement* const outputs,
                                               const int32 numOuts) -> tresult {
-  // 入力バス・出力バスの数はいずれも 1
-  if (numIns == 1 && numOuts == 1 &&
-      (inputs[0] == SpeakerArr::kMono || inputs[0] == SpeakerArr::kStereo) &&
-      (outputs[0] == SpeakerArr::kMono || outputs[0] == SpeakerArr::kStereo)) {
-    return AudioEffect::setBusArrangements(inputs, numIns, outputs, numOuts);
+  if (numIns != 1 || numOuts != 1) {
+    return kResultFalse;
   }
 
-  return kResultFalse;
+  // The conversion input may be mono or stereo (stereo is downmixed before
+  // conversion), while the post-effects output must remain stereo.  When a
+  // host asks for an unsupported arrangement, leave the buses in the closest
+  // supported layout so it can discover the mono-to-stereo configuration.
+  const auto input_supported =
+      inputs[0] == SpeakerArr::kMono || inputs[0] == SpeakerArr::kStereo;
+  auto selected_input = input_supported ? inputs[0] : SpeakerArr::kMono;
+  auto selected_output = SpeakerArr::kStereo;
+  const auto result = AudioEffect::setBusArrangements(
+      &selected_input, 1, &selected_output, 1);
+  return input_supported && outputs[0] == SpeakerArr::kStereo
+             ? result
+             : kResultFalse;
 }
 
 // "Setup Done" の状態に遷移する

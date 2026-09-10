@@ -91,7 +91,8 @@ enum class ParameterID : std::int16_t {
   kDenoiseHfCut = kOutputEffectsParameterBase + 4,
   kReverbMix = kOutputEffectsParameterBase + 10,
   kReverbDecay = kOutputEffectsParameterBase + 11,
-  kReverbTone = kOutputEffectsParameterBase + 12,
+  // Keep the former Reverb Tone numeric ID for VST automation compatibility.
+  kReverbWidth = kOutputEffectsParameterBase + 12,
 };
 
 inline auto IsVoiceMorphParameter(const ParameterID param_id) -> bool {

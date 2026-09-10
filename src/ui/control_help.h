@@ -69,7 +69,7 @@ enum class ControlHelpID : std::uint16_t {
   kDenoiseHfCut = 0x0804,
   kReverbMix = 0x0810,
   kReverbDecay = 0x0811,
-  kReverbTone = 0x0812,
+  kReverbWidth = 0x0812,
 
   // Standalone IN/OUT and recording controls.
   kInputSource = 0x0900,
@@ -190,8 +190,8 @@ inline constexpr auto kControlHelpDefinitions =
          "reverb_mix"},
         {ControlHelpID::kReverbDecay, ControlHelpSection::kEffects,
          "reverb_decay"},
-        {ControlHelpID::kReverbTone, ControlHelpSection::kEffects,
-         "reverb_tone"},
+        {ControlHelpID::kReverbWidth, ControlHelpSection::kEffects,
+         "reverb_width"},
         {ControlHelpID::kInputSource, ControlHelpSection::kStandaloneInOut,
          "input_source"},
         {ControlHelpID::kInputDevice, ControlHelpSection::kStandaloneInOut,
@@ -306,8 +306,8 @@ inline constexpr auto kControlHelpDefinitions =
       return ControlHelpID::kReverbMix;
     case ParameterID::kReverbDecay:
       return ControlHelpID::kReverbDecay;
-    case ParameterID::kReverbTone:
-      return ControlHelpID::kReverbTone;
+    case ParameterID::kReverbWidth:
+      return ControlHelpID::kReverbWidth;
     case ParameterID::kPitchShift:
       return ControlHelpID::kPitchShift;
     case ParameterID::kFormantShift:

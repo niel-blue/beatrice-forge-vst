@@ -116,8 +116,8 @@ class ProcessorCoreBase {
     output_effects_.SetReverbDecay(seconds);
     return ErrorCode::kSuccess;
   }
-  virtual auto SetReverbTone(const double tone) -> ErrorCode {
-    output_effects_.SetReverbTone(tone);
+  virtual auto SetReverbWidth(const double width) -> ErrorCode {
+    output_effects_.SetReverbWidth(width);
     return ErrorCode::kSuccess;
   }
   [[nodiscard]] auto HasOutputEffectsTail() const noexcept -> bool {

@@ -28,7 +28,7 @@ struct Preset {
   double presence = 0.0;
   double reverb_mix = 0.0;
   double reverb_decay = 1.2;
-  double reverb_tone = 50.0;
+  double reverb_width = 50.0;
   double pitch_shift = 0.0;
   double formant_shift = 0.0;
   int vq_neighbor_count = 0;

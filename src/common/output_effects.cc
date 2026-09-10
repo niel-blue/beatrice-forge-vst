@@ -18,6 +18,8 @@ constexpr auto kPresenceBoost = 1.15;
 constexpr auto kReverbWetGain = 0.70;
 constexpr auto kAllPassFeedback = 0.5F;
 constexpr auto kSignalThreshold = 1.0e-7;
+constexpr auto kReverbDamping = 0.40;
+constexpr auto kMaximumReverbSideGain = 1.50;
 
 constexpr std::array kLeftCombDelays = {0.0297, 0.0371, 0.0411, 0.0437};
 constexpr std::array kRightCombDelays = {0.0307, 0.0361, 0.0403, 0.0449};
@@ -149,8 +151,8 @@ void OutputEffects::SetReverbDecay(const double seconds) noexcept {
   UpdateReverbFeedbackTargets();
 }
 
-void OutputEffects::SetReverbTone(const double tone) noexcept {
-  reverb_tone_target_ = std::clamp(tone / 100.0, 0.0, 1.0);
+void OutputEffects::SetReverbWidth(const double width) noexcept {
+  reverb_width_target_ = std::clamp(width / 100.0, 0.0, 1.0);
 }
 
 void OutputEffects::Reset() noexcept {
@@ -166,7 +168,7 @@ void OutputEffects::Reset() noexcept {
   de_mud_mix_ = de_mud_target_;
   presence_mix_ = presence_target_;
   reverb_mix_ = reverb_mix_target_;
-  reverb_tone_ = reverb_tone_target_;
+  reverb_width_ = reverb_width_target_;
   DiscardReverbTail();
 }
 
@@ -380,10 +382,9 @@ void OutputEffects::ProcessReverb(float* const left, float* const right,
     reverb_mix_ += std::clamp(reverb_mix_target_ - reverb_mix_,
                               -control_smoothing_step_,
                               control_smoothing_step_);
-    reverb_tone_ += std::clamp(reverb_tone_target_ - reverb_tone_,
-                               -control_smoothing_step_,
-                               control_smoothing_step_);
-    const auto damping = 0.75 - 0.70 * reverb_tone_;
+    reverb_width_ += std::clamp(reverb_width_target_ - reverb_width_,
+                                -control_smoothing_step_,
+                                control_smoothing_step_);
     const auto dry = left[i];
     if (std::abs(static_cast<double>(dry)) > kSignalThreshold) {
       tail_samples_remaining_ = tail_duration_samples_;
@@ -394,10 +395,12 @@ void OutputEffects::ProcessReverb(float* const left, float* const right,
     auto wet_left = 0.0F;
     auto wet_right = 0.0F;
     for (auto& comb : left_combs_) {
-      wet_left += comb.Process(dry, damping, control_smoothing_step_);
+      wet_left +=
+          comb.Process(dry, kReverbDamping, control_smoothing_step_);
     }
     for (auto& comb : right_combs_) {
-      wet_right += comb.Process(dry, damping, control_smoothing_step_);
+      wet_right +=
+          comb.Process(dry, kReverbDamping, control_smoothing_step_);
     }
     wet_left /= static_cast<float>(kNCombs);
     wet_right /= static_cast<float>(kNCombs);
@@ -412,6 +415,19 @@ void OutputEffects::ProcessReverb(float* const left, float* const right,
 
     const auto dry_mix = 1.0 - reverb_mix_;
     if (right != nullptr) {
+      // Width acts only on the wet side signal.  The converted voice remains
+      // identical in both channels and therefore stays firmly in the centre.
+      // A value of 50 preserves the original stereo field; the upper half
+      // expands it conservatively while retaining exact mono compatibility.
+      const auto wet_mid = 0.5F * (wet_left + wet_right);
+      const auto wet_side = 0.5F * (wet_left - wet_right);
+      const auto side_gain =
+          reverb_width_ <= 0.5
+              ? 2.0 * reverb_width_
+              : 1.0 + (kMaximumReverbSideGain - 1.0) *
+                          (reverb_width_ - 0.5) * 2.0;
+      wet_left = static_cast<float>(wet_mid + wet_side * side_gain);
+      wet_right = static_cast<float>(wet_mid - wet_side * side_gain);
       left[i] = static_cast<float>(dry * dry_mix + wet_left * reverb_mix_);
       right[i] = static_cast<float>(dry * dry_mix + wet_right * reverb_mix_);
     } else {

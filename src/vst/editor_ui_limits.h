@@ -45,7 +45,7 @@ struct SliderSpec {
     case common::ParameterID::kDeMud:
     case common::ParameterID::kPresence:
     case common::ParameterID::kReverbMix:
-    case common::ParameterID::kReverbTone:
+    case common::ParameterID::kReverbWidth:
       return Range{0.0f, 100.0f};
     case common::ParameterID::kDenoiseThreshold:
       return Range{static_cast<float>(common::kDenoiseThresholdMinDb),
@@ -81,7 +81,7 @@ struct SliderSpec {
     case common::ParameterID::kDeMud:
     case common::ParameterID::kPresence:
     case common::ParameterID::kReverbMix:
-    case common::ParameterID::kReverbTone:
+    case common::ParameterID::kReverbWidth:
       return {0, 1.0f, 0.1f, 1.0f, 0.1f};
     case common::ParameterID::kDenoiseThreshold:
     case common::ParameterID::kDenoiseReduction:

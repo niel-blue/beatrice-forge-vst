@@ -40,7 +40,7 @@ auto MakePresetDocument(const std::vector<Preset>& presets,
         {"presence", preset.presence},
         {"reverb_mix", preset.reverb_mix},
         {"reverb_decay", preset.reverb_decay},
-        {"reverb_tone", preset.reverb_tone},
+        {"reverb_width", preset.reverb_width},
         {"pitch_shift", preset.pitch_shift},
         {"formant_shift", preset.formant_shift},
         {"vq_neighbor_count", preset.vq_neighbor_count},
@@ -105,8 +105,9 @@ void ReadPresetDocument(const toml::value& root, std::vector<Preset>& presets,
           .reverb_mix = toml::find_or<double>(entry, "reverb_mix", 0.0),
           .reverb_decay =
               toml::find_or<double>(entry, "reverb_decay", 1.2),
-          .reverb_tone =
-              toml::find_or<double>(entry, "reverb_tone", 50.0),
+          .reverb_width = toml::find_or<double>(
+              entry, "reverb_width",
+              toml::find_or<double>(entry, "reverb_tone", 50.0)),
           .pitch_shift = toml::find_or<double>(entry, "pitch_shift", 0.0),
           .formant_shift =
               toml::find_or<double>(entry, "formant_shift", 0.0),

@@ -36,7 +36,7 @@ class OutputEffects {
   void SetDenoiseHfCut(double frequency_hz) noexcept;
   void SetReverbMix(double mix) noexcept;
   void SetReverbDecay(double seconds) noexcept;
-  void SetReverbTone(double tone) noexcept;
+  void SetReverbWidth(double width) noexcept;
 
   void Reset() noexcept;
   void DiscardReverbTail() noexcept;
@@ -120,8 +120,8 @@ class OutputEffects {
   double reverb_mix_target_ = 0.0;
   double reverb_mix_ = 0.0;
   double reverb_decay_seconds_ = 1.2;
-  double reverb_tone_target_ = 0.5;
-  double reverb_tone_ = 0.5;
+  double reverb_width_target_ = 0.5;
+  double reverb_width_ = 0.5;
   std::int64_t tail_samples_remaining_ = 0;
   std::int64_t tail_duration_samples_ = 0;
   bool reverb_cleared_ = true;

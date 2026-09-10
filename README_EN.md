@@ -36,7 +36,7 @@ Hover over a control to display a tooltip explaining how to use it. Japanese hel
 
 - **Noise Reduction Boost** — Suppresses low-level noise that may occur with some models when needed.
 - **INPUT CLEANUP** — Low Cut reduces unwanted low-frequency content, Light Denoise gently reduces steady background noise, and De-click suppresses brief clicks and lip noise.
-- **EFFECTS** — Denoise suppresses noise in the converted voice after conversion with Threshold / Reduction / HF Cut. De-Mud reduces muddiness, Presence adds clarity, and Reverb controls the amount, length, and tone of reverberation.
+- **EFFECTS** — Denoise suppresses noise in the converted voice after conversion with Threshold / Reduction / HF Cut. De-Mud reduces muddiness, Presence adds clarity, and Reverb controls the amount, length, and stereo width of reverberation. Width affects only the reverb, preserving the converted voice's centre position.
 - **Input and converted-output level meters** — Show whether input and converted audio are present and indicate their approximate levels.
 - **Legacy-style morph interface** — Retains the familiar morph controls while displaying speaker names and weight values.
 

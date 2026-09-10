@@ -446,13 +446,13 @@ const ParameterSchema kSchema = [] {
            [](ProcessorProxy& vc, const double value) {
              return vc.GetCore()->SetReverbDecay(value);
            })},
-      {ParameterID::kReverbTone,
+      {ParameterID::kReverbWidth,
        NumberParameter(
-           u8"Tone"s, 50.0, 0.0, 100.0, u8"%"s, 100, u8"RevTone"s,
+           u8"Width"s, 50.0, 0.0, 100.0, u8"%"s, 100, u8"RevWidth"s,
            parameter_flag::kCanAutomate,
            [](ControllerCore&, double) { return ErrorCode::kSuccess; },
            [](ProcessorProxy& vc, const double value) {
-             return vc.GetCore()->SetReverbTone(value);
+             return vc.GetCore()->SetReverbWidth(value);
            })},
       {ParameterID::kIntonationIntensity,
        NumberParameter(

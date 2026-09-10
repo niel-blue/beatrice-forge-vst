@@ -93,8 +93,8 @@ namespace beatrice::ui {
       return "変換後の声に残響音（エコー）を加えます。";
     case ControlHelpID::kReverbDecay:
       return "残響音が消えるまでの長さを調整します。";
-    case ControlHelpID::kReverbTone:
-      return "残響音の明るさを調整します。上げるほど高域を残します。";
+    case ControlHelpID::kReverbWidth:
+      return "残響音だけの左右の広がりを調整します。変換後の声の中心定位には影響しません。";
     case ControlHelpID::kInputSource:
       return "変換する音声の入力元を選びます。";
     case ControlHelpID::kInputDevice:
